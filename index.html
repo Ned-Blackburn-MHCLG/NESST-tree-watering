@@ -3,10 +3,10 @@
 <title>NESST Tree Watering Map</title>
 <meta name="description" content="Which of the NESST street trees need watering, updated from volunteer tag taps and local rainfall.">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🌳</text></svg>">
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"/>
-<script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet.markercluster@1.5.3/dist/MarkerCluster.css"/>
-<script src="https://cdn.jsdelivr.net/npm/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+<link rel="stylesheet" href="vendor/leaflet/leaflet.css"/>
+<script src="vendor/leaflet/leaflet.js"></script>
+<link rel="stylesheet" href="vendor/leaflet.markercluster/MarkerCluster.css"/>
+<script src="vendor/leaflet.markercluster/leaflet.markercluster.js"></script>
 <style>
   html,body,#map{height:100%;margin:0}
   body{font-family:system-ui,-apple-system,sans-serif}
@@ -56,9 +56,10 @@ function draw(d) {
   var pts = d.points;
   var info = d.info;
   info.focus = (new URLSearchParams(location.search).get('tree') || '').trim().toLowerCase();
-  var colours = {overdue:'#c0392b', never:'#5d6d7e', soon:'#e67e22', ok:'#27ae60'};
-  var labels = {ok:'Watered recently', soon:'Due within 2 days',
-    overdue:'Overdue (' + info.overdue + '+ days)', never:'No watering recorded'};
+  var colours = {overdue:'#c0392b', never:'#5d6d7e', soon:'#e67e22', ok:'#27ae60', rest:'#7f9cc0'};
+  var offSeason = info.inSeason === false;
+  var labels = {ok:'Watered recently', soon:'Due within 2 days', overdue:'Overdue',
+    never:'No watering recorded', rest:'Established — no regular watering'};
   var map = L.map('map', {maxZoom:20}); // tiles stop at 18 and are enlarged beyond that
   L.tileLayer(d.tileUrl,
     {attribution:'&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions" target="_blank">CARTO</a>', subdomains:'abcd', maxNativeZoom:18, maxZoom:20}).addTo(map);
@@ -75,16 +76,18 @@ function draw(d) {
     if (p.lastTap) h += 'Last watered: ' + p.lastTap + '<br>';
     else h += 'No watering recorded yet<br>';
     if (p.rainReset && info.rain) h += 'Heavy rain (' + info.rain.mm + ' mm, ' + info.rain.when + ') counted as a watering<br>';
+    if (p.rest === 'season') h += 'Out of season (' + info.season + ') — water only in a long dry spell<br>';
+    else if (p.interval) h += p.interval + '<br>';
     if (p.due) h += (p.status === 'overdue' ? '<b style="color:' + colours.overdue + '">Overdue</b> since ' : 'Next due: ') + p.due + '<br>';
     h += '<span class="muted">Waterings: ' + p.count30 + ' in last 30 days · ' + p.countYear + ' this year</span></div>';
     return h;
   }
 
-  var rank = {ok:0, soon:1, never:2, overdue:3};
+  var rank = {rest:-1, ok:0, soon:1, never:2, overdue:3};
   var cluster = L.markerClusterGroup({
     maxClusterRadius: 45,
     iconCreateFunction: function(c) {
-      var worst = 'ok';
+      var worst = 'rest';
       c.getAllChildMarkers().forEach(function(m){
         if (rank[m.options._status] > rank[worst]) worst = m.options._status;
       });
@@ -121,7 +124,10 @@ function draw(d) {
   legend.onAdd = function() {
     var d = L.DomUtil.create('div', 'panel legend');
     var h = '';
-    ['ok','soon','overdue','never'].forEach(function(s){
+    var rows = offSeason ? [] : ['ok','soon','overdue','never'];
+    if (offSeason) labels.rest = 'Out of season (' + info.season + ') — no watering needed';
+    if (offSeason || pts.some(function(p){ return p.status === 'rest'; })) rows.push('rest');
+    rows.forEach(function(s){
       h += '<div class="row"><span class="dot" style="background:'+colours[s]+'"></span>'+labels[s]+'</div>';
     });
     h += '<div class="note">' + (info.rainError ? 'Rain data unavailable right now.' :
@@ -136,7 +142,7 @@ function draw(d) {
   legend.addTo(map);
 
   // Trees needing water, collapsed by default so the map stays the focus
-  var needy = pts.filter(function(p){ return p.status !== 'ok'; }).sort(function(a, b){
+  var needy = pts.filter(function(p){ return p.status !== 'ok' && p.status !== 'rest'; }).sort(function(a, b){
     return rank[b.status] - rank[a.status] || (b.days || 0) - (a.days || 0);
   });
   var due = L.control({position:'topright'});
@@ -145,7 +151,10 @@ function draw(d) {
     L.DomEvent.disableClickPropagation(d);
     L.DomEvent.disableScrollPropagation(d);
     var btn = L.DomUtil.create('button', '', d);
-    if (!needy.length) { btn.textContent = '✓ All trees watered'; return d; }
+    if (!needy.length) {
+      btn.textContent = offSeason ? 'Out of season — no watering needed' : '✓ All trees watered';
+      return d;
+    }
     btn.textContent = needy.length + (needy.length === 1 ? ' tree needs' : ' trees need') + ' water ▾';
     var ul = L.DomUtil.create('ul', '', d);
     ul.style.display = 'none';

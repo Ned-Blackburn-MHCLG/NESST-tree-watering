@@ -6,6 +6,14 @@ const REPEAT_TAP_MS = 5 * 60 * 1000;
 const DEFAULT_RAIN_MM = 25;
 const RAIN_WINDOW_HOURS = 48;
 const MAP_PAGE_URL = 'https://ned-blackburn-mhclg.github.io/NESST-tree-watering/';
+// Watering season (months, inclusive); override in Summary!H3 and H4.
+// Guidance focuses on May-Aug; September is included as it can still be dry.
+const DEFAULT_SEASON = [5, 9];
+// Watering interval by tree age, as multiples of Summary!H1: weekly in the
+// first year, fortnightly in the second, monthly in the third (Cambridge City
+// Council guidance), then established. Trees without a planted date use year 1.
+const AGE_MULTIPLIERS = [1, 2, 4];
+const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
 function doGet(e) {
   if (e.parameter.view === 'data') {
@@ -36,16 +44,61 @@ function fmt(ms, pattern) {
   return Utilities.formatDate(new Date(ms), 'Europe/London', pattern || 'd MMM, HH:mm');
 }
 
+// Accepts 1-12 or a month name ("May", "September")
+function parseMonth(v) {
+  if (typeof v === 'number' && v >= 1 && v <= 12) return Math.round(v);
+  const i = MONTHS.indexOf(String(v).trim().slice(0, 3).replace(/^./, function(c) { return c.toUpperCase(); }));
+  return i < 0 ? null : i + 1;
+}
+
 function getSettings(ss) {
   let overdue = 7, rainMm = DEFAULT_RAIN_MM;
+  let seasonStart = DEFAULT_SEASON[0], seasonEnd = DEFAULT_SEASON[1];
   const summary = ss.getSheetByName('Summary');
   if (summary) {
-    const h1 = summary.getRange('H1').getValue();
-    if (typeof h1 === 'number' && h1 > 0) overdue = h1;
-    const h2 = summary.getRange('H2').getValue();
-    if (typeof h2 === 'number' && h2 > 0) rainMm = h2;
+    const v = summary.getRange('H1:H4').getValues().map(function(r) { return r[0]; });
+    if (typeof v[0] === 'number' && v[0] > 0) overdue = v[0];
+    if (typeof v[1] === 'number' && v[1] > 0) rainMm = v[1];
+    if (parseMonth(v[2]) && parseMonth(v[3])) {
+      seasonStart = parseMonth(v[2]);
+      seasonEnd = parseMonth(v[3]);
+    }
   }
-  return {overdue: overdue, rainMm: rainMm};
+  return {overdue: overdue, rainMm: rainMm, seasonStart: seasonStart, seasonEnd: seasonEnd};
+}
+
+function inSeason(settings, now) {
+  const m = +fmt(now, 'MM');
+  return settings.seasonStart <= settings.seasonEnd
+    ? m >= settings.seasonStart && m <= settings.seasonEnd
+    : m >= settings.seasonStart || m <= settings.seasonEnd;
+}
+
+function seasonLabel(settings) {
+  return MONTHS[settings.seasonStart - 1] + '\u2013' + MONTHS[settings.seasonEnd - 1];
+}
+
+// A date, or just a year. A bare year counts as planted on 31 Dec, so the
+// tree is treated as younger (watered more often) rather than older.
+function parsePlanted(v) {
+  if (v instanceof Date) return v.getTime();
+  if (typeof v === 'number' && v > 1900 && v < 2200) return new Date(v, 11, 31).getTime();
+  const s = String(v).trim();
+  if (/^\d{4}$/.test(s)) return new Date(+s, 11, 31).getTime();
+  const m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (m) return new Date(+m[3], +m[2] - 1, +m[1]).getTime();
+  return parseUKDate(v);
+}
+
+// {days, label}; days is null once the tree is established
+function wateringInterval(tree, settings, now) {
+  if (!tree.planted || tree.planted > now) {
+    return {days: settings.overdue, label: 'Every ' + settings.overdue + ' days'};
+  }
+  const year = Math.floor((now - tree.planted) / (365.25 * 86400000));
+  if (year >= AGE_MULTIPLIERS.length) return {days: null, label: 'Established \u2014 only needed in a drought'};
+  const days = settings.overdue * AGE_MULTIPLIERS[year];
+  return {days: days, label: 'Every ' + days + ' days (' + ['1st', '2nd', '3rd'][year] + ' year after planting)'};
 }
 
 function getTrees(ss) {
@@ -58,7 +111,8 @@ function getTrees(ss) {
     trees.push({
       id: id, rawId: row[0],
       species: String(row[1]), location: String(row[2]),
-      lat: parseFloat(row[3]), lng: parseFloat(row[4])
+      lat: parseFloat(row[3]), lng: parseFloat(row[4]),
+      planted: parsePlanted(row[5])
     });
   }
   return trees;
@@ -89,7 +143,7 @@ function getLastSoakingRain(trees, settings, cacheOnly) {
   if (!pts.length) return null;
   const lat = pts.reduce(function(s, t) { return s + t.lat; }, 0) / pts.length;
   const lng = pts.reduce(function(s, t) { return s + t.lng; }, 0) / pts.length;
-  const pastDays = Math.min(92, settings.overdue + 7); // keep in step with rainDays in mapData
+  const pastDays = rainLookbackDays(settings);
 
   const cache = CacheService.getScriptCache();
   const cacheKey = ['rain', lat.toFixed(3), lng.toFixed(3), settings.rainMm, pastDays].join(':');
@@ -132,8 +186,12 @@ function getLastSoakingRain(trees, settings, cacheOnly) {
   return result;
 }
 
+function rainLookbackDays(settings) {
+  return Math.min(92, settings.overdue * AGE_MULTIPLIERS[AGE_MULTIPLIERS.length - 1] + 7);
+}
+
 function computeStatuses(trees, taps, rain, settings, now) {
-  const overdue = settings.overdue;
+  const season = inSeason(settings, now);
   const monthAgo = now - 30 * 86400000;
   const yearStart = new Date(fmt(now, 'yyyy') + '-01-01T00:00:00').getTime();
   const rainMs = rain && rain.ms ? rain.ms : 0;
@@ -141,17 +199,22 @@ function computeStatuses(trees, taps, rain, settings, now) {
     const list = taps[t.id] || [];
     const lastTap = list.length ? list[list.length - 1] : 0;
     const last = Math.max(lastTap, rainMs);
-    let days = null, status = 'never';
-    if (last) {
-      days = Math.floor((now - last) / 86400000);
-      status = days >= overdue ? 'overdue' : days >= overdue - 2 ? 'soon' : 'ok';
+    const interval = wateringInterval(t, settings, now);
+    const days = last ? Math.floor((now - last) / 86400000) : null;
+    // 'rest' = no watering needed: out of season or an established tree
+    let status = 'rest';
+    if (season && interval.days) {
+      status = days === null ? 'never'
+        : days >= interval.days ? 'overdue' : days >= interval.days - 2 ? 'soon' : 'ok';
     }
     return {
       id: t.id, species: t.species, location: t.location,
       lat: t.lat, lng: t.lng, days: days, status: status,
+      rest: status !== 'rest' ? null : season ? 'established' : 'season',
+      interval: interval.label,
       lastTap: lastTap ? fmt(lastTap) : null,
       rainReset: rainMs > lastTap,
-      due: last ? fmt(last + overdue * 86400000, 'EEE d MMM') : null,
+      due: last && status !== 'rest' ? fmt(last + interval.days * 86400000, 'EEE d MMM') : null,
       count30: list.filter(function(ms) { return ms >= monthAgo; }).length,
       countYear: list.filter(function(ms) { return ms >= yearStart; }).length
     };
@@ -213,9 +276,16 @@ function recordWatering(e) {
   lines.push('That\u2019s ' + n + ' watering' + (n === 1 ? '' : 's') + ' for this tree in ' +
     fmt(now, 'MMMM') + '.');
 
+  const settings = getSettings(ss);
+  if (!inSeason(settings, now)) {
+    lines.push('It\u2019s outside the watering season (' + seasonLabel(settings) +
+      '), so watering is only needed in a long dry spell.');
+  } else if (!wateringInterval(tree, settings, now).days) {
+    lines.push('This tree is established, so it only needs watering in a drought.');
+  }
+
   // Neighbour colours for the optional mini map; rain only if already cached,
   // so a tap never waits on Open-Meteo
-  const settings = getSettings(ss);
   const rain = getLastSoakingRain(trees, settings, true);
   return HtmlService.createHtmlOutput(buildConfirmHtml({
     ok: true, mapUrl: mapPageUrl(id),
@@ -236,7 +306,8 @@ function mapData(e) {
       overdue: ctx.settings.overdue, rainMm: ctx.settings.rainMm,
       rain: ctx.rain && ctx.rain.ms ? {when: fmt(ctx.rain.ms), mm: ctx.rain.mm} : null,
       rainError: !!(ctx.rain && ctx.rain.error),
-      rainDays: Math.min(92, ctx.settings.overdue + 7),
+      rainDays: rainLookbackDays(ctx.settings),
+      inSeason: inSeason(ctx.settings, now), season: seasonLabel(ctx.settings),
       updated: fmt(now), focus: normId(e.parameter.tree || '')
     },
     tileUrl: tileUrl(),
@@ -277,7 +348,7 @@ function tileUrl() {
 const ATTRIBUTION = '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap</a> ' +
   '&copy; <a href="https://carto.com/attributions" target="_blank">CARTO</a>';
 
-const COLOURS = {overdue:'#c0392b', never:'#5d6d7e', soon:'#e67e22', ok:'#27ae60'};
+const COLOURS = {overdue:'#c0392b', never:'#5d6d7e', soon:'#e67e22', ok:'#27ae60', rest:'#7f9cc0'};
 
 // Kept deliberately light for patchy mobile data: no scripts or tiles load
 // unless the volunteer taps "Show nearby trees"
@@ -291,10 +362,10 @@ document.getElementById('show').onclick = function() {
   var btn = this;
   btn.disabled = true; btn.textContent = 'Loading map\u2026';
   var css = document.createElement('link');
-  css.rel = 'stylesheet'; css.href = 'https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css';
+  css.rel = 'stylesheet'; css.href = ${JSON.stringify(MAP_PAGE_URL + 'vendor/leaflet/leaflet.css')};
   document.head.appendChild(css);
   var js = document.createElement('script');
-  js.src = 'https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js';
+  js.src = ${JSON.stringify(MAP_PAGE_URL + 'vendor/leaflet/leaflet.js')};
   js.onerror = function() { btn.disabled = false; btn.textContent = 'Couldn\u2019t load \u2014 try again'; };
   js.onload = function() {
     btn.remove();

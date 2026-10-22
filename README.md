@@ -14,4 +14,10 @@ The backend google sheet used to produce the map can be found here: https://docs
 3. In Apps Script, under Project Settings > Script Properties:
    - `key`: the CARTO basemaps API key
    - `mapUrl` (optional): overrides the map address the tap page links to, and that old `?view=map` links redirect to. The default is the GitHub Pages URL.
-4. Optional, on the Summary sheet: `H1` is the number of days before a tree is overdue (default 7). `H2` is the rainfall in mm over 48 hours that counts as a watering (default 25).
+4. Optional settings on the Summary sheet:
+   - `H1`: days between waterings for a first-year tree (default 7)
+   - `H2`: rainfall in mm over 48 hours that counts as a watering (default 25)
+   - `H3` / `H4`: first and last month of the watering season, as a number or a name such as `May` (default May to September). Outside the season, the map shows no tree as needing water.
+5. Optional on the Trees sheet: column F, `Planted`, takes a date or just a year. Trees are watered every `H1` days in their first year, 2×`H1` in the second, 4×`H1` in the third, and not on a schedule after that. A blank cell counts as first year. A year on its own counts as 31 December of that year.
+
+`vendor/` holds Leaflet 1.9.4 and Leaflet.markercluster 1.5.3, served from GitHub Pages instead of a CDN.

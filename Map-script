@@ -1,0 +1,130 @@
+function doGet(e) {
+  if (e.parameter.view === 'map') {
+    return renderMap(e);
+  }
+  const id = e.parameter.id || 'unknown';
+  const log = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Log');
+  log.appendRow([new Date(), id]);
+  return HtmlService.createHtmlOutput(
+    `<body style="font-family:sans-serif;text-align:center;padding-top:15vh">
+       <h2>✅ Watered — thanks!</h2>
+     </body>`
+  );
+}
+
+function parseUKDate(v) {
+  if (!v) return 0;
+  var s = String(v).trim();
+  var m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})[ ,]+(\d{1,2}):(\d{2})(?::(\d{2}))?/);
+  if (m) {
+    return new Date(+m[3], +m[2]-1, +m[1], +m[4], +m[5], +m[6]||0).getTime();
+  }
+  var t = new Date(s).getTime();
+  return isNaN(t) ? 0 : t;
+}
+
+function renderMap(e) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const trees = ss.getSheetByName('Trees').getDataRange().getValues();
+  const log = ss.getSheetByName('Log').getDataRange().getValues();
+
+  let overdue = 7;
+  const summary = ss.getSheetByName('Summary');
+  if (summary) {
+    const h1 = summary.getRange('H1').getValue();
+    if (typeof h1 === 'number' && h1 > 0) overdue = h1;
+  }
+
+  const lastById = {};
+  for (let i = 1; i < log.length; i++) {
+    const id = String(log[i][1]).trim().toLowerCase();
+    if (!id) continue;
+    const t = log[i][0];
+    const ms = (t instanceof Date) ? t.getTime() : parseUKDate(t);
+    if (!(id in lastById) || ms > lastById[id]) lastById[id] = ms;
+  }
+
+  const now = Date.now();
+  const points = [];
+  for (let i = 1; i < trees.length; i++) {
+    const row = trees[i];
+    const id = String(row[0]).trim().toLowerCase();
+    const species = String(row[1]);
+    const location = String(row[2]);
+    const lat = parseFloat(row[3]);
+    const lng = parseFloat(row[4]);
+    if (isNaN(lat) || isNaN(lng)) continue;
+
+    const last = lastById[id];
+    let days = null, status = 'never';
+    if (last) {
+      days = Math.floor((now - last) / 86400000);
+      status = days >= overdue ? 'overdue' : days >= overdue - 2 ? 'soon' : 'ok';
+    }
+    points.push({
+      name: species + ', ' + location,
+      lat: lat, lng: lng, days: days, status: status,
+      last: last ? Utilities.formatDate(new Date(last), 'Europe/London', 'd MMM, HH:mm') : null
+    });
+  }
+  if (e.parameter.debug) {
+    return HtmlService.createHtmlOutput('<pre>' +
+      JSON.stringify({overdue: overdue, lastById: lastById, points: points}, null, 2) +
+      '</pre>');
+  }
+  return HtmlService.createHtmlOutput(buildMapHtml(points))
+    .addMetaTag('viewport', 'width=device-width, initial-scale=1');
+}
+
+function buildMapHtml(points) {
+  const data = JSON.stringify(points);
+  return `<!DOCTYPE html><html><head><meta charset="utf-8">
+<meta name="referrer" content="no-referrer">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"/>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet.markercluster@1.5.3/dist/MarkerCluster.css"/>
+<script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"><\/script>
+<script src="https://cdn.jsdelivr.net/npm/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"><\/script>
+<style>
+  html,body,#map{height:100%;margin:0}
+</style></head><body>
+<div id="map"></div>
+<script>
+window.addEventListener('load', function() {
+  var pts = ${data};
+  var colours = {overdue:'#c0392b', never:'#5d6d7e', soon:'#e67e22', ok:'#27ae60'};
+  var map = L.map('map');
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
+    {attribution:'© OpenStreetMap © CARTO', subdomains:'abcd', maxZoom:20}).addTo(map);
+
+  var rank = {ok:0, soon:1, never:2, overdue:3};
+  var cluster = L.markerClusterGroup({
+    maxClusterRadius: 45,
+    iconCreateFunction: function(c) {
+      var worst = 'ok';
+      c.getAllChildMarkers().forEach(function(m){
+        if (rank[m.options._status] > rank[worst]) worst = m.options._status;
+      });
+      return L.divIcon({
+        html: '<div style="background:'+colours[worst]+';width:34px;height:34px;'+
+              'border-radius:50%;border:2.5px solid #fff;color:#fff;font:600 13px sans-serif;'+
+              'display:flex;align-items:center;justify-content:center;">'+c.getChildCount()+'</div>',
+        className: '', iconSize: [34,34]
+      });
+    }
+  });
+
+  var bounds = [];
+  pts.forEach(function(p){
+    var m = L.circleMarker([p.lat, p.lng], {radius:11, color:'#fff', weight:2.5,
+      fillColor: colours[p.status], fillOpacity:1, _status: p.status});
+    m.bindPopup('<b>'+p.name+'</b><br>'+
+      (p.last ? 'Last watered: '+p.last+' ('+p.days+' d ago)' : 'Never watered'));
+    cluster.addLayer(m);
+    bounds.push([p.lat, p.lng]);
+  });
+  map.addLayer(cluster);
+  if (bounds.length) map.fitBounds(bounds, {padding:[40,40], maxZoom:17});
+  else map.setView([53.48, -1.49], 15);
+});
+<\/script></body></html>`;
+}

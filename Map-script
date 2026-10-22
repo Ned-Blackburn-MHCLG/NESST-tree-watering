@@ -102,7 +102,9 @@ function getLastSoakingRain(trees, settings, cacheOnly) {
       '&longitude=' + lng.toFixed(4) + '&hourly=precipitation&timezone=GMT' +
       '&past_days=' + pastDays + '&forecast_days=1';
     const res = UrlFetchApp.fetch(url, {muteHttpExceptions: true});
-    if (res.getResponseCode() !== 200) throw new Error('Open-Meteo ' + res.getResponseCode());
+    if (res.getResponseCode() !== 200) {
+      throw new Error('Open-Meteo ' + res.getResponseCode() + ': ' + res.getContentText().slice(0, 200));
+    }
     const hourly = JSON.parse(res.getContentText()).hourly;
     const now = Date.now();
     const hours = [];
@@ -123,7 +125,7 @@ function getLastSoakingRain(trees, settings, cacheOnly) {
     }
   } catch (err) {
     console.warn('Rain lookup failed: ' + err);
-    return {error: true};
+    return {error: true, message: String(err)};
   }
   cache.put(cacheKey, JSON.stringify(result), 3600);
   return result;

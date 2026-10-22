@@ -9,7 +9,7 @@ The backend google sheet used to produce the map can be found here: https://docs
 
 ### Setup
 
-1. In `index.html`, set `DATA_URL` to the Apps Script web app URL (ends in `/exec`).
+1. `DATA_URL` in `index.html` must be the Apps Script web app URL (ends in `/exec`). Keep it in sync if the deployment changes.
 2. In the repo settings, under Pages, set the source to deploy from the `main` branch, root folder.
 3. In Apps Script, under Project Settings > Script Properties:
    - `key`: the CARTO basemaps API key

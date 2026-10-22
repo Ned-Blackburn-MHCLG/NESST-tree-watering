@@ -126,7 +126,8 @@ function draw(d) {
     });
     h += '<div class="note">' + (info.rainError ? 'Rain data unavailable right now.' :
       'Heavy rain (' + info.rainMm + ' mm+ in 48 h) counts as a watering.' +
-      (info.rain ? ' Last: ' + info.rain.when + '.' : '')) +
+      (info.rain ? ' Last: ' + info.rain.when + '.' :
+        ' None in the last ' + (info.rainDays || Math.min(92, info.overdue + 7)) + ' days.')) +
       '<br>Updated ' + info.updated + '</div>';
     d.innerHTML = h;
     L.DomEvent.disableClickPropagation(d);

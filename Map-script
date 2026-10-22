@@ -88,7 +88,7 @@ function getLastSoakingRain(trees, settings, cacheOnly) {
   if (!pts.length) return null;
   const lat = pts.reduce(function(s, t) { return s + t.lat; }, 0) / pts.length;
   const lng = pts.reduce(function(s, t) { return s + t.lng; }, 0) / pts.length;
-  const pastDays = Math.min(92, settings.overdue + 7);
+  const pastDays = Math.min(92, settings.overdue + 7); // keep in step with rainDays in mapData
 
   const cache = CacheService.getScriptCache();
   const cacheKey = ['rain', lat.toFixed(3), lng.toFixed(3), settings.rainMm, pastDays].join(':');
@@ -237,6 +237,7 @@ function mapData(e) {
       overdue: ctx.settings.overdue, rainMm: ctx.settings.rainMm,
       rain: ctx.rain && ctx.rain.ms ? {when: fmt(ctx.rain.ms), mm: ctx.rain.mm} : null,
       rainError: !!(ctx.rain && ctx.rain.error),
+      rainDays: Math.min(92, ctx.settings.overdue + 7),
       updated: fmt(now), focus: normId(e.parameter.tree || '')
     },
     tileUrl: tileUrl(),
@@ -452,7 +453,8 @@ window.addEventListener('load', function() {
     });
     h += '<div class="note">' + (info.rainError ? 'Rain data unavailable right now.' :
       'Heavy rain (' + info.rainMm + ' mm+ in 48 h) counts as a watering.' +
-      (info.rain ? ' Last: ' + info.rain.when + '.' : '')) +
+      (info.rain ? ' Last: ' + info.rain.when + '.' :
+        ' None in the last ' + (info.rainDays || Math.min(92, info.overdue + 7)) + ' days.')) +
       '<br>Updated ' + info.updated + '</div>';
     d.innerHTML = h;
     L.DomEvent.disableClickPropagation(d);

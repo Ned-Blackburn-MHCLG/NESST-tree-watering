@@ -30,6 +30,12 @@
   .toast{position:absolute;left:50%;top:12px;transform:translateX(-50%);z-index:1000;
     background:#1f2d24;color:#fff;padding:8px 12px;border-radius:8px;font-size:13px;
     max-width:80vw;text-align:center}
+  .preview{padding:7px 9px;display:flex;flex-wrap:wrap;gap:5px;max-width:200px;justify-content:flex-end}
+  .preview .pv-title{width:100%;font-weight:600;font-size:12px;color:#56645b}
+  .preview button{font:inherit;font-size:12px;border:1px solid #c9d8cb;background:#fff;color:#1f2d24;
+    border-radius:999px;padding:4px 9px;cursor:pointer}
+  .preview button.on{background:#1f6f3a;border-color:#1f6f3a;color:#fff}
+  .preview button:disabled{opacity:.45;cursor:default}
   .pop b{font-size:14px}
   .pop .muted{color:#56645b}
 </style></head><body>
@@ -39,28 +45,48 @@
 // Apps Script web app URL (Deploy > Manage deployments), ending in /exec
 var DATA_URL = 'https://script.google.com/macros/s/AKfycbzwHppa_Dd1riWXpchENKyJNhrdF-0Tnp-jpdOT53kwbQwwfuPJdamU06XHJ8D9Pgm6dw/exec';
 
+var data, currentMap;
+// ?preview shows a season toggle; ?preview=in / ?preview=out opens that view
+var params = new URLSearchParams(location.search);
+var preview = params.has('preview') ? (params.get('preview') || 'actual') : null;
+
+// Copy of the data as it would look in or out of season, for previews
+function applyPreview(d, mode) {
+  if (!mode || mode === 'actual') return d;
+  var c = JSON.parse(JSON.stringify(d));
+  c.info.inSeason = mode === 'in';
+  c.points.forEach(function(p) {
+    var v = p.views ? p.views[mode] : mode === 'out' ? {status:'rest', rest:'season', due:null} : null;
+    if (v) { p.status = v.status; p.rest = v.rest; p.due = v.due; }
+  });
+  return c;
+}
+
 function load() {
   var status = document.getElementById('status');
   status.hidden = false;
   status.innerHTML = 'Loading trees\u2026';
   fetch(DATA_URL + '?view=data')
     .then(function(r) { if (!r.ok) throw new Error(r.status); return r.json(); })
-    .then(function(d) { status.hidden = true; draw(d); })
+    .then(function(d) { status.hidden = true; data = d; draw(); })
     .catch(function() {
       status.innerHTML = 'Couldn\u2019t load the tree data. <button type="button" id="retry">Try again</button>';
       document.getElementById('retry').onclick = load;
     });
 }
 
-function draw(d) {
+function draw() {
+  var d = applyPreview(data, preview);
   var pts = d.points;
   var info = d.info;
-  info.focus = (new URLSearchParams(location.search).get('tree') || '').trim().toLowerCase();
+  info.season = info.season || 'May\u2013Sep';
+  info.focus = (params.get('tree') || '').trim().toLowerCase();
   var colours = {overdue:'#c0392b', never:'#5d6d7e', soon:'#e67e22', ok:'#27ae60', rest:'#7f9cc0'};
   var offSeason = info.inSeason === false;
   var labels = {ok:'Watered recently', soon:'Due within 2 days', overdue:'Overdue',
     never:'No watering recorded', rest:'Established — no regular watering'};
-  var map = L.map('map', {maxZoom:20}); // tiles stop at 18 and are enlarged beyond that
+  if (currentMap) currentMap.remove();
+  var map = currentMap = L.map('map', {maxZoom:20}); // tiles stop at 18 and are enlarged beyond that
   L.tileLayer(d.tileUrl,
     {attribution:'&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions" target="_blank">CARTO</a>', subdomains:'abcd', maxNativeZoom:18, maxZoom:20}).addTo(map);
 
@@ -169,6 +195,30 @@ function draw(d) {
     return d;
   };
   due.addTo(map);
+
+  if (preview) {
+    var pv = L.control({position:'topright'});
+    pv.onAdd = function() {
+      var el = L.DomUtil.create('div', 'panel preview');
+      L.DomEvent.disableClickPropagation(el);
+      var canIn = data.info.inSeason !== false || data.points.every(function(p){ return p.views; });
+      el.innerHTML = '<div class="pv-title">' + (preview === 'actual' ? 'Season preview' :
+        'Preview \u2014 not the real status') + '</div>';
+      [['actual','Today'],['in','In season'],['out','Out of season']].forEach(function(o){
+        var b = L.DomUtil.create('button', o[0] === preview ? 'on' : '', el);
+        b.type = 'button'; b.textContent = o[1];
+        if (o[0] === 'in' && !canIn) { b.disabled = true; b.title = 'Needs the latest script deployed'; }
+        b.onclick = function(){
+          preview = o[0];
+          params.set('preview', o[0] === 'actual' ? '' : o[0]);
+          history.replaceState(null, '', '?' + params.toString().replace(/preview=(&|$)/, 'preview$1'));
+          draw();
+        };
+      });
+      return el;
+    };
+    pv.addTo(map);
+  }
 
   // Show my location
   var locate = L.control({position:'topleft'});

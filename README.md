@@ -21,3 +21,7 @@ The backend google sheet used to produce the map can be found here: https://docs
 5. Optional on the Trees sheet: column F, `Planted`, takes a date or just a year. Trees are watered every `H1` days in their first year, 2×`H1` in the second, 4×`H1` in the third, and not on a schedule after that. A blank cell counts as first year. A year on its own counts as 31 December of that year.
 
 `vendor/` holds Leaflet 1.9.4 and Leaflet.markercluster 1.5.3, served from GitHub Pages instead of a CDN.
+
+### Season preview
+
+Add `?preview` to the map link to show a toggle between today's view, the in-season view and the out-of-season view. Use `?preview=in` or `?preview=out` to open straight in one of them. A previewed view is labelled "Preview — not the real status". The toggle stays hidden on the normal link.

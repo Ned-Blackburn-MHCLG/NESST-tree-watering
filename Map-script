@@ -201,20 +201,28 @@ function computeStatuses(trees, taps, rain, settings, now) {
     const last = Math.max(lastTap, rainMs);
     const interval = wateringInterval(t, settings, now);
     const days = last ? Math.floor((now - last) / 86400000) : null;
-    // 'rest' = no watering needed: out of season or an established tree
-    let status = 'rest';
-    if (season && interval.days) {
-      status = days === null ? 'never'
-        : days >= interval.days ? 'overdue' : days >= interval.days - 2 ? 'soon' : 'ok';
+    // 'rest' = no watering needed: out of season or an established tree.
+    // Both views are sent so the map can preview the other season.
+    const views = {
+      in: {status: 'rest', rest: 'established', due: null},
+      out: {status: 'rest', rest: 'season', due: null}
+    };
+    if (interval.days) {
+      views.in = {
+        status: days === null ? 'never'
+          : days >= interval.days ? 'overdue' : days >= interval.days - 2 ? 'soon' : 'ok',
+        rest: null,
+        due: last ? fmt(last + interval.days * 86400000, 'EEE d MMM') : null
+      };
     }
+    const view = season ? views.in : views.out;
     return {
       id: t.id, species: t.species, location: t.location,
-      lat: t.lat, lng: t.lng, days: days, status: status,
-      rest: status !== 'rest' ? null : season ? 'established' : 'season',
+      lat: t.lat, lng: t.lng, days: days,
+      status: view.status, rest: view.rest, due: view.due, views: views,
       interval: interval.label,
       lastTap: lastTap ? fmt(lastTap) : null,
       rainReset: rainMs > lastTap,
-      due: last && status !== 'rest' ? fmt(last + interval.days * 86400000, 'EEE d MMM') : null,
       count30: list.filter(function(ms) { return ms >= monthAgo; }).length,
       countYear: list.filter(function(ms) { return ms >= yearStart; }).length
     };

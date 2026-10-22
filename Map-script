@@ -7,6 +7,9 @@ const DEFAULT_RAIN_MM = 25;
 const RAIN_WINDOW_HOURS = 48;
 
 function doGet(e) {
+  if (e.parameter.view === 'data') {
+    return renderData(e);
+  }
   if (e.parameter.view === 'map') {
     return renderMap(e);
   }
@@ -79,7 +82,8 @@ function getTapsById(ss) {
 // Most recent time the rolling 48h rainfall reached the threshold, using
 // Open-Meteo hourly data for the centre of the trees. Cached for an hour.
 // Returns {ms, mm}, null if no qualifying rain, or {error: true} if unavailable.
-function getLastSoakingRain(trees, settings) {
+// With cacheOnly, never calls Open-Meteo (returns undefined on a cache miss).
+function getLastSoakingRain(trees, settings, cacheOnly) {
   const pts = trees.filter(function(t) { return !isNaN(t.lat) && !isNaN(t.lng); });
   if (!pts.length) return null;
   const lat = pts.reduce(function(s, t) { return s + t.lat; }, 0) / pts.length;
@@ -90,6 +94,7 @@ function getLastSoakingRain(trees, settings) {
   const cacheKey = ['rain', lat.toFixed(3), lng.toFixed(3), settings.rainMm, pastDays].join(':');
   const cached = cache.get(cacheKey);
   if (cached) return JSON.parse(cached);
+  if (cacheOnly) return undefined;
 
   let result;
   try {
@@ -150,79 +155,115 @@ function computeStatuses(trees, taps, rain, settings, now) {
   });
 }
 
-function mapContext(ss) {
+function mapContext(ss, cacheOnlyRain) {
   const settings = getSettings(ss);
   const trees = getTrees(ss);
   const taps = getTapsById(ss);
-  const rain = getLastSoakingRain(trees, settings);
+  const rain = getLastSoakingRain(trees, settings, cacheOnlyRain);
   return {settings: settings, trees: trees, taps: taps, rain: rain};
+}
+
+// Public map page: the GitHub Pages copy if Script Property "mapUrl" is set,
+// otherwise the map served by this script
+function mapPageUrl(treeId) {
+  const pages = PropertiesService.getScriptProperties().getProperty('mapUrl');
+  const base = pages || ScriptApp.getService().getUrl() + '?view=map';
+  return treeId ? base + (base.indexOf('?') < 0 ? '?' : '&') + 'tree=' + encodeURIComponent(treeId) : base;
 }
 
 function recordWatering(e) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const ctx = mapContext(ss);
+  const trees = getTrees(ss);
+  const taps = getTapsById(ss);
   const id = normId(e.parameter.id || '');
-  const tree = ctx.trees.filter(function(t) { return t.id === id; })[0];
-  const mapUrl = ScriptApp.getService().getUrl() + '?view=map';
+  const tree = trees.filter(function(t) { return t.id === id; })[0];
 
   if (!tree) {
     return HtmlService.createHtmlOutput(buildConfirmHtml({
-      ok: false, mapUrl: mapUrl,
+      ok: false, mapUrl: mapPageUrl(),
       heading: 'Tag not recognised',
-      lines: ['This tag isn’t linked to a tree on the list, so nothing was recorded.']
+      lines: ['This tag isn\u2019t linked to a tree on the list, so nothing was recorded.']
     })).addMetaTag('viewport', 'width=device-width, initial-scale=1');
   }
 
+  // Log before anything else so a slow or dropped connection can't lose the watering
   const now = Date.now();
-  const list = ctx.taps[id] || [];
+  const list = taps[id] || [];
   const prev = list.length ? list[list.length - 1] : 0;
   const repeat = prev && now - prev < REPEAT_TAP_MS;
-  const lines = [];
-  if (repeat) {
-    lines.push('Already recorded at ' + fmt(prev, 'HH:mm') + ' — no need to tap again.');
-  } else {
+  if (!repeat) {
     ss.getSheetByName('Log').appendRow([new Date(now), tree.rawId]);
     list.push(now);
-    ctx.taps[id] = list;
-    if (prev) {
-      const d = Math.floor((now - prev) / 86400000);
-      lines.push('Previously watered ' + fmt(prev) + ' (' +
-        (d === 0 ? 'earlier today' : d === 1 ? '1 day ago' : d + ' days ago') + ').');
-    } else {
-      lines.push('This is the first recorded watering for this tree.');
-    }
+    taps[id] = list;
+  }
+
+  const lines = [];
+  if (repeat) {
+    lines.push('Already recorded at ' + fmt(prev, 'HH:mm') + ' \u2014 no need to tap again.');
+  } else if (prev) {
+    const d = Math.floor((now - prev) / 86400000);
+    lines.push('Previously watered ' + fmt(prev) + ' (' +
+      (d === 0 ? 'earlier today' : d === 1 ? '1 day ago' : d + ' days ago') + ').');
+  } else {
+    lines.push('This is the first recorded watering for this tree.');
   }
   const month = fmt(now, 'yyyy-MM');
   const n = list.filter(function(ms) { return fmt(ms, 'yyyy-MM') === month; }).length;
-  lines.push('That’s ' + n + ' watering' + (n === 1 ? '' : 's') + ' for this tree in ' +
+  lines.push('That\u2019s ' + n + ' watering' + (n === 1 ? '' : 's') + ' for this tree in ' +
     fmt(now, 'MMMM') + '.');
 
+  // Neighbour colours for the optional mini map; rain only if already cached,
+  // so a tap never waits on Open-Meteo
+  const settings = getSettings(ss);
+  const rain = getLastSoakingRain(trees, settings, true);
   return HtmlService.createHtmlOutput(buildConfirmHtml({
-    ok: true, mapUrl: mapUrl + '&tree=' + encodeURIComponent(id),
-    heading: repeat ? 'Already recorded — thanks!' : 'Watered — thanks!',
+    ok: true, mapUrl: mapPageUrl(id),
+    heading: repeat ? 'Already recorded \u2014 thanks!' : 'Watered \u2014 thanks!',
     tree: tree, lines: lines,
-    points: computeStatuses(ctx.trees, ctx.taps, ctx.rain, ctx.settings, now),
+    points: computeStatuses(trees, taps, rain, settings, now),
     tileUrl: tileUrl()
   })).addMetaTag('viewport', 'width=device-width, initial-scale=1');
 }
 
-function renderMap(e) {
+function mapData(e) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const ctx = mapContext(ss);
   const now = Date.now();
-  const points = computeStatuses(ctx.trees, ctx.taps, ctx.rain, ctx.settings, now);
-  const info = {
-    overdue: ctx.settings.overdue, rainMm: ctx.settings.rainMm,
-    rain: ctx.rain && ctx.rain.ms ? {when: fmt(ctx.rain.ms), mm: ctx.rain.mm} : null,
-    rainError: !!(ctx.rain && ctx.rain.error),
-    updated: fmt(now), focus: normId(e.parameter.tree || '')
+  return {
+    points: computeStatuses(ctx.trees, ctx.taps, ctx.rain, ctx.settings, now),
+    info: {
+      overdue: ctx.settings.overdue, rainMm: ctx.settings.rainMm,
+      rain: ctx.rain && ctx.rain.ms ? {when: fmt(ctx.rain.ms), mm: ctx.rain.mm} : null,
+      rainError: !!(ctx.rain && ctx.rain.error),
+      updated: fmt(now), focus: normId(e.parameter.tree || '')
+    },
+    tileUrl: tileUrl(),
+    rawRain: ctx.rain
   };
+}
+
+// JSON for the GitHub Pages map (index.html in the repo)
+function renderData(e) {
+  const d = mapData(e);
+  delete d.rawRain;
+  return ContentService.createTextOutput(JSON.stringify(d))
+    .setMimeType(ContentService.MimeType.JSON);
+}
+
+function renderMap(e) {
+  if (PropertiesService.getScriptProperties().getProperty('mapUrl') && !e.parameter.debug) {
+    const url = mapPageUrl(e.parameter.tree ? normId(e.parameter.tree) : '');
+    return HtmlService.createHtmlOutput(
+      '<script>window.top.location.href = ' + JSON.stringify(url) + ';<\/script>' +
+      '<p style="font-family:sans-serif"><a href="' + url + '" target="_top">Open the tree map</a></p>');
+  }
+  const d = mapData(e);
   if (e.parameter.debug) {
     return HtmlService.createHtmlOutput('<pre>' +
-      JSON.stringify({info: info, rawRain: ctx.rain, points: points}, null, 2) +
+      JSON.stringify({info: d.info, rawRain: d.rawRain, points: d.points}, null, 2) +
       '</pre>');
   }
-  return HtmlService.createHtmlOutput(buildMapHtml(points, info, tileUrl()))
+  return HtmlService.createHtmlOutput(buildMapHtml(d.points, d.info, d.tileUrl))
     .addMetaTag('viewport', 'width=device-width, initial-scale=1');
 }
 
@@ -242,32 +283,46 @@ const ATTRIBUTION = '&copy; <a href="https://www.openstreetmap.org/copyright" ta
 
 const COLOURS = {overdue:'#c0392b', never:'#5d6d7e', soon:'#e67e22', ok:'#27ae60'};
 
+// Kept deliberately light for patchy mobile data: no scripts or tiles load
+// unless the volunteer taps "Show nearby trees"
 function buildConfirmHtml(o) {
-  const mini = o.ok ? `
-<a class="mini" href="${o.mapUrl}" target="_top">
-  <div id="mini"></div>
-  <span>Open the full map ›</span>
-</a>
+  const extra = o.ok ? `
+<button id="show" type="button">Show nearby trees</button>
+<div id="mini" hidden></div>
+<p><a href="${o.mapUrl}" target="_top">Open the full map \u203a</a></p>
 <script>
-window.addEventListener('load', function() {
-  var pts = ${JSON.stringify(o.points)};
-  var colours = ${JSON.stringify(COLOURS)};
-  var here = ${JSON.stringify(o.tree.id)};
-  var map = L.map('mini', {zoomControl:false, dragging:false, touchZoom:false, scrollWheelZoom:false,
-    doubleClickZoom:false, boxZoom:false, keyboard:false, tap:false, attributionControl:true});
-  L.tileLayer(${JSON.stringify(o.tileUrl)},
-    {attribution:${JSON.stringify(ATTRIBUTION)}, subdomains:'abcd', maxZoom:20}).addTo(map);
-  map.attributionControl.setPrefix(false);
-  pts.forEach(function(p){
-    var me = p.id === here;
-    L.circleMarker([p.lat, p.lng], {radius: me ? 13 : 8, color:'#fff', weight: me ? 3 : 2,
-      fillColor: colours[me ? 'ok' : p.status], fillOpacity:1, interactive:false}).addTo(map);
-    if (me) map.setView([p.lat, p.lng], 18);
-  });
-});
-<\/script>` : `<p><a href="${o.mapUrl}" target="_top">View the tree map ›</a></p>`;
+document.getElementById('show').onclick = function() {
+  var btn = this;
+  btn.disabled = true; btn.textContent = 'Loading map\u2026';
+  var css = document.createElement('link');
+  css.rel = 'stylesheet'; css.href = 'https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css';
+  document.head.appendChild(css);
+  var js = document.createElement('script');
+  js.src = 'https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js';
+  js.onerror = function() { btn.disabled = false; btn.textContent = 'Couldn\u2019t load \u2014 try again'; };
+  js.onload = function() {
+    btn.remove();
+    var el = document.getElementById('mini'); el.hidden = false;
+    var pts = ${JSON.stringify(o.points)};
+    var colours = ${JSON.stringify(COLOURS)};
+    var here = ${JSON.stringify(o.tree.id)};
+    var map = L.map(el, {zoomControl:false, dragging:false, touchZoom:false, scrollWheelZoom:false,
+      doubleClickZoom:false, boxZoom:false, keyboard:false});
+    L.tileLayer(${JSON.stringify(o.tileUrl)},
+      {attribution:${JSON.stringify(ATTRIBUTION)}, subdomains:'abcd', maxZoom:20}).addTo(map);
+    map.attributionControl.setPrefix(false);
+    pts.forEach(function(p){
+      var me = p.id === here;
+      L.circleMarker([p.lat, p.lng], {radius: me ? 13 : 8, color:'#fff', weight: me ? 3 : 2,
+        fillColor: colours[me ? 'ok' : p.status], fillOpacity:1, interactive:false}).addTo(map);
+      if (me) map.setView([p.lat, p.lng], 18);
+    });
+  };
+  document.head.appendChild(js);
+};
+<\/script>` : `<p><a href="${o.mapUrl}" target="_top">View the tree map \u203a</a></p>`;
 
-  return `<!DOCTYPE html><html><head>${LEAFLET_HEAD}
+  return `<!DOCTYPE html><html><head><meta charset="utf-8">
 <style>
   body{font-family:system-ui,-apple-system,sans-serif;margin:0;padding:8vh 16px 32px;
     text-align:center;color:#1f2d24;background:#f4f8f3}
@@ -277,15 +332,16 @@ window.addEventListener('load', function() {
   .tree{font-size:17px;font-weight:600;margin:0}
   .where{color:#56645b;margin:2px 0 16px}
   p{margin:6px 0;line-height:1.4}
-  .mini{display:block;margin:20px 0 0;text-decoration:none;color:#1f6f3a;font-weight:600}
-  #mini{height:200px;border-radius:12px;overflow:hidden;border:1px solid #d5e0d6;margin-bottom:8px}
-  a{color:#1f6f3a}
+  button{font:inherit;font-weight:600;color:#1f6f3a;background:#fff;border:1px solid #c9d8cb;
+    border-radius:10px;padding:10px 16px;margin:20px 0 8px;cursor:pointer}
+  #mini{height:200px;border-radius:12px;overflow:hidden;border:1px solid #d5e0d6;margin:20px 0 8px}
+  a{color:#1f6f3a;font-weight:600}
 </style></head><body><div class="wrap">
-  <div class="tick">${o.ok ? '\u{1F4A7}' : '❓'}</div>
+  <div class="tick">${o.ok ? '\u{1F4A7}' : '\u2753'}</div>
   <h1>${o.heading}</h1>
   ${o.tree ? `<p class="tree">${o.tree.species}</p><p class="where">${o.tree.location}</p>` : ''}
   ${o.lines.map(function(l) { return '<p>' + l + '</p>'; }).join('')}
-  ${mini}
+  ${extra}
 </div></body></html>`;
 }
 

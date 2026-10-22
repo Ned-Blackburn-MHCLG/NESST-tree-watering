@@ -260,7 +260,8 @@ function renderMap(e) {
   const d = mapData(e);
   if (e.parameter.debug) {
     return HtmlService.createHtmlOutput('<pre>' +
-      JSON.stringify({info: d.info, rawRain: d.rawRain, points: d.points}, null, 2) +
+      JSON.stringify({info: d.info, rawRain: d.rawRain, cartoKeySet: d.tileUrl.indexOf('?key=') > 0,
+        points: d.points}, null, 2) +
       '</pre>');
   }
   return HtmlService.createHtmlOutput(buildMapHtml(d.points, d.info, d.tileUrl))
@@ -268,7 +269,7 @@ function renderMap(e) {
 }
 
 function tileUrl() {
-  const key = PropertiesService.getScriptProperties().getProperty('key');
+  const key = (PropertiesService.getScriptProperties().getProperty('key') || '').trim();
   if (!key) console.warn('No Carto API key in Script Properties ("key") - tiles will be watermarked');
   return 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png' +
     (key ? '?key=' + encodeURIComponent(key) : '');

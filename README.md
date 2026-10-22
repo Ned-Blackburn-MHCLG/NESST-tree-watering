@@ -13,5 +13,5 @@ The backend google sheet used to produce the map can be found here: https://docs
 2. In the repo settings, under Pages, set the source to deploy from the `main` branch, root folder.
 3. In Apps Script, under Project Settings > Script Properties:
    - `key`: the CARTO basemaps API key
-   - `mapUrl` (optional): the GitHub Pages URL. Once set, the tap page links there and the old `?view=map` redirects there.
+   - `mapUrl` (optional): overrides the map address the tap page links to, and that old `?view=map` links redirect to. The default is the GitHub Pages URL.
 4. Optional, on the Summary sheet: `H1` is the number of days before a tree is overdue (default 7). `H2` is the rainfall in mm over 48 hours that counts as a watering (default 25).

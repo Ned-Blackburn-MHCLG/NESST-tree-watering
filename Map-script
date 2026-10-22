@@ -5,6 +5,7 @@ const REPEAT_TAP_MS = 5 * 60 * 1000;
 // so only a genuine soaking resets the clock, not a passing shower.
 const DEFAULT_RAIN_MM = 25;
 const RAIN_WINDOW_HOURS = 48;
+const MAP_PAGE_URL = 'https://ned-blackburn-mhclg.github.io/NESST-tree-watering/';
 
 function doGet(e) {
   if (e.parameter.view === 'data') {
@@ -165,11 +166,9 @@ function mapContext(ss, cacheOnlyRain) {
   return {settings: settings, trees: trees, taps: taps, rain: rain};
 }
 
-// Public map page: the GitHub Pages copy if Script Property "mapUrl" is set,
-// otherwise the map served by this script
+// Public map page (index.html on GitHub Pages); Script Property "mapUrl" overrides it
 function mapPageUrl(treeId) {
-  const pages = PropertiesService.getScriptProperties().getProperty('mapUrl');
-  const base = pages || ScriptApp.getService().getUrl() + '?view=map';
+  const base = PropertiesService.getScriptProperties().getProperty('mapUrl') || MAP_PAGE_URL;
   return treeId ? base + (base.indexOf('?') < 0 ? '?' : '&') + 'tree=' + encodeURIComponent(treeId) : base;
 }
 
@@ -253,22 +252,19 @@ function renderData(e) {
     .setMimeType(ContentService.MimeType.JSON);
 }
 
+// Old ?view=map links now redirect to the GitHub Pages map; ?debug=1 still shows the data
 function renderMap(e) {
-  if (PropertiesService.getScriptProperties().getProperty('mapUrl') && !e.parameter.debug) {
-    const url = mapPageUrl(e.parameter.tree ? normId(e.parameter.tree) : '');
-    return HtmlService.createHtmlOutput(
-      '<script>window.top.location.href = ' + JSON.stringify(url) + ';<\/script>' +
-      '<p style="font-family:sans-serif"><a href="' + url + '" target="_top">Open the tree map</a></p>');
-  }
-  const d = mapData(e);
   if (e.parameter.debug) {
+    const d = mapData(e);
     return HtmlService.createHtmlOutput('<pre>' +
       JSON.stringify({info: d.info, rawRain: d.rawRain, cartoKeySet: d.tileUrl.indexOf('?key=') > 0,
         points: d.points}, null, 2) +
       '</pre>');
   }
-  return HtmlService.createHtmlOutput(buildMapHtml(d.points, d.info, d.tileUrl))
-    .addMetaTag('viewport', 'width=device-width, initial-scale=1');
+  const url = mapPageUrl(e.parameter.tree ? normId(e.parameter.tree) : '');
+  return HtmlService.createHtmlOutput(
+    '<script>window.top.location.href = ' + JSON.stringify(url) + ';<\/script>' +
+    '<p style="font-family:sans-serif"><a href="' + url + '" target="_top">Open the tree map</a></p>');
 }
 
 function tileUrl() {
@@ -277,10 +273,6 @@ function tileUrl() {
   return 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png' +
     (key ? '?key=' + encodeURIComponent(key) : '');
 }
-
-const LEAFLET_HEAD = `<meta charset="utf-8">
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"/>
-<script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"><\/script>`;
 
 const ATTRIBUTION = '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap</a> ' +
   '&copy; <a href="https://carto.com/attributions" target="_blank">CARTO</a>';
@@ -347,174 +339,4 @@ document.getElementById('show').onclick = function() {
   ${o.lines.map(function(l) { return '<p>' + l + '</p>'; }).join('')}
   ${extra}
 </div></body></html>`;
-}
-
-function buildMapHtml(points, info, tileUrl) {
-  return `<!DOCTYPE html><html><head>${LEAFLET_HEAD}
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet.markercluster@1.5.3/dist/MarkerCluster.css"/>
-<script src="https://cdn.jsdelivr.net/npm/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"><\/script>
-<style>
-  html,body,#map{height:100%;margin:0}
-  body{font-family:system-ui,-apple-system,sans-serif}
-  .panel{background:#fff;border-radius:10px;box-shadow:0 1px 5px rgba(0,0,0,.25);
-    font-size:13px;color:#1f2d24;line-height:1.35}
-  .legend{padding:8px 10px;max-width:220px}
-  .legend .row{display:flex;align-items:center;gap:7px;margin:2px 0}
-  .dot{width:12px;height:12px;border-radius:50%;border:2px solid #fff;
-    box-shadow:0 0 0 1px rgba(0,0,0,.15);flex:none}
-  .legend .note{color:#56645b;font-size:11.5px;margin-top:6px}
-  .due{max-width:240px}
-  .due button{all:unset;cursor:pointer;display:block;padding:7px 11px;font-weight:600}
-  .due ul{list-style:none;margin:0;padding:0 0 4px;max-height:40vh;overflow:auto;
-    border-top:1px solid #e3e9e4}
-  .due li{display:flex;gap:7px;align-items:center;padding:6px 11px;cursor:pointer}
-  .due li:hover{background:#f1f5f1}
-  .due li small{color:#56645b;margin-left:auto;white-space:nowrap}
-  .locate{all:unset;cursor:pointer;width:30px;height:30px;display:flex;align-items:center;
-    justify-content:center;background:#fff;font-size:17px}
-  .toast{position:absolute;left:50%;top:12px;transform:translateX(-50%);z-index:1000;
-    background:#1f2d24;color:#fff;padding:8px 12px;border-radius:8px;font-size:13px;
-    max-width:80vw;text-align:center}
-  .pop b{font-size:14px}
-  .pop .muted{color:#56645b}
-</style></head><body>
-<div id="map"></div>
-<script>
-window.addEventListener('load', function() {
-  var pts = ${JSON.stringify(points)};
-  var info = ${JSON.stringify(info)};
-  var colours = ${JSON.stringify(COLOURS)};
-  var labels = {ok:'Watered recently', soon:'Due within 2 days',
-    overdue:'Overdue (' + info.overdue + '+ days)', never:'No watering recorded'};
-  var map = L.map('map', {maxZoom:20}); // tiles stop at 18 and are enlarged beyond that
-  L.tileLayer(${JSON.stringify(tileUrl)},
-    {attribution:${JSON.stringify(ATTRIBUTION)}, subdomains:'abcd', maxNativeZoom:18, maxZoom:20}).addTo(map);
-
-  function toast(msg) {
-    var t = document.createElement('div');
-    t.className = 'toast'; t.textContent = msg;
-    document.body.appendChild(t);
-    setTimeout(function(){ t.remove(); }, 4000);
-  }
-
-  function popupHtml(p) {
-    var h = '<div class="pop"><b>' + p.species + '</b><br><span class="muted">' + p.location + '</span><br><br>';
-    if (p.lastTap) h += 'Last watered: ' + p.lastTap + '<br>';
-    else h += 'No watering recorded yet<br>';
-    if (p.rainReset && info.rain) h += 'Heavy rain (' + info.rain.mm + ' mm, ' + info.rain.when + ') counted as a watering<br>';
-    if (p.due) h += (p.status === 'overdue' ? '<b style="color:' + colours.overdue + '">Overdue</b> since ' : 'Next due: ') + p.due + '<br>';
-    h += '<span class="muted">Waterings: ' + p.count30 + ' in last 30 days · ' + p.countYear + ' this year</span></div>';
-    return h;
-  }
-
-  var rank = {ok:0, soon:1, never:2, overdue:3};
-  var cluster = L.markerClusterGroup({
-    maxClusterRadius: 45,
-    iconCreateFunction: function(c) {
-      var worst = 'ok';
-      c.getAllChildMarkers().forEach(function(m){
-        if (rank[m.options._status] > rank[worst]) worst = m.options._status;
-      });
-      return L.divIcon({
-        html: '<div style="background:'+colours[worst]+';width:34px;height:34px;'+
-              'border-radius:50%;border:2.5px solid #fff;color:#fff;font:600 13px sans-serif;'+
-              'display:flex;align-items:center;justify-content:center;">'+c.getChildCount()+'</div>',
-        className: '', iconSize: [34,34]
-      });
-    }
-  });
-
-  var bounds = [], markers = {};
-  pts.forEach(function(p){
-    var m = L.circleMarker([p.lat, p.lng], {radius:11, color:'#fff', weight:2.5,
-      fillColor: colours[p.status], fillOpacity:1, _status: p.status});
-    m.bindPopup(popupHtml(p));
-    cluster.addLayer(m);
-    markers[p.id] = m;
-    bounds.push([p.lat, p.lng]);
-  });
-  map.addLayer(cluster);
-  if (bounds.length) map.fitBounds(bounds, {padding:[40,40], maxZoom:17});
-  else map.setView([53.48, -1.49], 15);
-
-  function showTree(id) {
-    var m = markers[id];
-    if (m) cluster.zoomToShowLayer(m, function(){ m.openPopup(); });
-  }
-  if (info.focus) showTree(info.focus);
-
-  // Legend
-  var legend = L.control({position:'bottomleft'});
-  legend.onAdd = function() {
-    var d = L.DomUtil.create('div', 'panel legend');
-    var h = '';
-    ['ok','soon','overdue','never'].forEach(function(s){
-      h += '<div class="row"><span class="dot" style="background:'+colours[s]+'"></span>'+labels[s]+'</div>';
-    });
-    h += '<div class="note">' + (info.rainError ? 'Rain data unavailable right now.' :
-      'Heavy rain (' + info.rainMm + ' mm+ in 48 h) counts as a watering.' +
-      (info.rain ? ' Last: ' + info.rain.when + '.' :
-        ' None in the last ' + (info.rainDays || Math.min(92, info.overdue + 7)) + ' days.')) +
-      '<br>Updated ' + info.updated + '</div>';
-    d.innerHTML = h;
-    L.DomEvent.disableClickPropagation(d);
-    return d;
-  };
-  legend.addTo(map);
-
-  // Trees needing water, collapsed by default so the map stays the focus
-  var needy = pts.filter(function(p){ return p.status !== 'ok'; }).sort(function(a, b){
-    return rank[b.status] - rank[a.status] || (b.days || 0) - (a.days || 0);
-  });
-  var due = L.control({position:'topright'});
-  due.onAdd = function() {
-    var d = L.DomUtil.create('div', 'panel due');
-    L.DomEvent.disableClickPropagation(d);
-    L.DomEvent.disableScrollPropagation(d);
-    var btn = L.DomUtil.create('button', '', d);
-    if (!needy.length) { btn.textContent = '✓ All trees watered'; return d; }
-    btn.textContent = needy.length + (needy.length === 1 ? ' tree needs' : ' trees need') + ' water ▾';
-    var ul = L.DomUtil.create('ul', '', d);
-    ul.style.display = 'none';
-    needy.forEach(function(p){
-      var li = L.DomUtil.create('li', '', ul);
-      li.innerHTML = '<span class="dot" style="background:'+colours[p.status]+'"></span>' +
-        p.species + ', ' + p.location.split(',')[0] +
-        '<small>' + (p.days === null ? 'never' : p.days + ' d') + '</small>';
-      li.onclick = function(){ ul.style.display = 'none'; showTree(p.id); };
-    });
-    btn.onclick = function(){ ul.style.display = ul.style.display === 'none' ? '' : 'none'; };
-    return d;
-  };
-  due.addTo(map);
-
-  // Show my location
-  var locate = L.control({position:'topleft'});
-  var me = null;
-  locate.onAdd = function() {
-    var d = L.DomUtil.create('div', 'leaflet-bar');
-    var b = L.DomUtil.create('button', 'locate', d);
-    b.title = 'Show my location'; b.setAttribute('aria-label', 'Show my location');
-    b.textContent = '◎';
-    L.DomEvent.disableClickPropagation(d);
-    b.onclick = function(){
-      if (!navigator.geolocation) return toast('Location isn’t available on this device.');
-      map.locate({setView:true, maxZoom:17});
-    };
-    return d;
-  };
-  locate.addTo(map);
-  map.on('locationfound', function(e){
-    if (me) map.removeLayer(me);
-    me = L.layerGroup([
-      L.circle(e.latlng, {radius:e.accuracy, color:'#2e86de', weight:1, fillOpacity:.1, interactive:false}),
-      L.circleMarker(e.latlng, {radius:7, color:'#fff', weight:2.5, fillColor:'#2e86de', fillOpacity:1, interactive:false})
-    ]).addTo(map);
-  });
-  map.on('locationerror', function(e){
-    toast(e.code === 1 ? 'Location permission was blocked, so we can’t show where you are.'
-                       : 'Couldn’t find your location just now.');
-  });
-});
-<\/script></body></html>`;
 }

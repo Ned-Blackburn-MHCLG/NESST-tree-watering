@@ -137,8 +137,7 @@ function getTapsById(ss) {
 // Most recent time the rolling 48h rainfall reached the threshold, using
 // Open-Meteo hourly data for the centre of the trees. Cached for an hour.
 // Returns {ms, mm}, null if no qualifying rain, or {error: true} if unavailable.
-// With cacheOnly, never calls Open-Meteo (returns undefined on a cache miss).
-function getLastSoakingRain(trees, settings, cacheOnly) {
+function getLastSoakingRain(trees, settings) {
   const pts = trees.filter(function(t) { return !isNaN(t.lat) && !isNaN(t.lng); });
   if (!pts.length) return null;
   const lat = pts.reduce(function(s, t) { return s + t.lat; }, 0) / pts.length;
@@ -149,7 +148,6 @@ function getLastSoakingRain(trees, settings, cacheOnly) {
   const cacheKey = ['rain', lat.toFixed(3), lng.toFixed(3), settings.rainMm, pastDays].join(':');
   const cached = cache.get(cacheKey);
   if (cached) return JSON.parse(cached);
-  if (cacheOnly) return undefined;
 
   let result;
   try {
@@ -229,11 +227,11 @@ function computeStatuses(trees, taps, rain, settings, now) {
   });
 }
 
-function mapContext(ss, cacheOnlyRain) {
+function mapContext(ss) {
   const settings = getSettings(ss);
   const trees = getTrees(ss);
   const taps = getTapsById(ss);
-  const rain = getLastSoakingRain(trees, settings, cacheOnlyRain);
+  const rain = getLastSoakingRain(trees, settings);
   return {settings: settings, trees: trees, taps: taps, rain: rain};
 }
 
@@ -246,7 +244,6 @@ function mapPageUrl(treeId) {
 function recordWatering(e) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const trees = getTrees(ss);
-  const taps = getTapsById(ss);
   const id = normId(e.parameter.id || '');
   const tree = trees.filter(function(t) { return t.id === id; })[0];
 
@@ -258,16 +255,26 @@ function recordWatering(e) {
     })).addMetaTag('viewport', 'width=device-width, initial-scale=1');
   }
 
-  // Log before anything else so a slow or dropped connection can't lose the watering
+  // Log before anything else so a slow or dropped connection can't lose the
+  // watering. Repeat taps are checked in the cache rather than by reading the
+  // Log sheet, which grows with every tap. If the cache entry is evicted early,
+  // the worst case is a duplicate row.
   const now = Date.now();
-  const list = taps[id] || [];
-  const prev = list.length ? list[list.length - 1] : 0;
-  const repeat = prev && now - prev < REPEAT_TAP_MS;
+  const cache = CacheService.getScriptCache();
+  const tapKey = 'tap:' + id;
+  const cachedTap = +cache.get(tapKey) || 0;
+  const repeat = cachedTap && now - cachedTap < REPEAT_TAP_MS;
   if (!repeat) {
     ss.getSheetByName('Log').appendRow([new Date(now), tree.rawId]);
-    list.push(now);
-    taps[id] = list;
+    SpreadsheetApp.flush();
+    cache.put(tapKey, String(now), REPEAT_TAP_MS / 1000);
   }
+
+  // Everything below only builds the confirmation message. The Log now
+  // includes this tap; leave it out (allowing for rounding) to find the one before.
+  const list = getTapsById(ss)[id] || [];
+  const earlier = repeat ? list : list.filter(function(ms) { return ms < now - 1000; });
+  const prev = repeat ? cachedTap : earlier.length ? earlier[earlier.length - 1] : 0;
 
   const lines = [];
   if (repeat) {
@@ -280,7 +287,7 @@ function recordWatering(e) {
     lines.push('This is the first recorded watering for this tree.');
   }
   const month = fmt(now, 'yyyy-MM');
-  const n = list.filter(function(ms) { return fmt(ms, 'yyyy-MM') === month; }).length;
+  const n = earlier.filter(function(ms) { return fmt(ms, 'yyyy-MM') === month; }).length + (repeat ? 0 : 1);
   lines.push('That\u2019s ' + n + ' watering' + (n === 1 ? '' : 's') + ' for this tree in ' +
     fmt(now, 'MMMM') + '.');
 
@@ -292,15 +299,13 @@ function recordWatering(e) {
     lines.push('This tree is established, so it only needs watering in a drought.');
   }
 
-  // Neighbour colours for the optional mini map; rain only if already cached,
-  // so a tap never waits on Open-Meteo
-  const rain = getLastSoakingRain(trees, settings, true);
+  // The optional mini map fetches ?view=data itself, so the page doesn't carry
+  // every tree's status
   return HtmlService.createHtmlOutput(buildConfirmHtml({
     ok: true, mapUrl: mapPageUrl(id),
     heading: repeat ? 'Already recorded \u2014 thanks!' : 'Watered \u2014 thanks!',
     tree: tree, lines: lines,
-    points: computeStatuses(trees, taps, rain, settings, now),
-    tileUrl: tileUrl()
+    dataUrl: ScriptApp.getService().getUrl() + '?view=data'
   })).addMetaTag('viewport', 'width=device-width, initial-scale=1');
 }
 
@@ -358,8 +363,8 @@ const ATTRIBUTION = '&copy; <a href="https://www.openstreetmap.org/copyright" ta
 
 const COLOURS = {overdue:'#c0392b', never:'#5d6d7e', soon:'#e67e22', ok:'#27ae60', rest:'#7f9cc0'};
 
-// Kept deliberately light for patchy mobile data: no scripts or tiles load
-// unless the volunteer taps "Show nearby trees"
+// Kept deliberately light for patchy mobile data: no scripts, tiles or tree
+// data load unless the volunteer taps "Show nearby trees"
 function buildConfirmHtml(o) {
   const extra = o.ok ? `
 <button id="show" type="button">Show nearby trees</button>
@@ -372,28 +377,37 @@ document.getElementById('show').onclick = function() {
   var css = document.createElement('link');
   css.rel = 'stylesheet'; css.href = ${JSON.stringify(MAP_PAGE_URL + 'vendor/leaflet/leaflet.css')};
   document.head.appendChild(css);
-  var js = document.createElement('script');
-  js.src = ${JSON.stringify(MAP_PAGE_URL + 'vendor/leaflet/leaflet.js')};
-  js.onerror = function() { btn.disabled = false; btn.textContent = 'Couldn\u2019t load \u2014 try again'; };
-  js.onload = function() {
+  var data = fetch(${JSON.stringify(o.dataUrl)}).then(function(r) {
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return r.json();
+  });
+  var leaflet = new Promise(function(resolve, reject) {
+    if (window.L) return resolve();
+    var js = document.createElement('script');
+    js.src = ${JSON.stringify(MAP_PAGE_URL + 'vendor/leaflet/leaflet.js')};
+    js.onload = resolve; js.onerror = reject;
+    document.head.appendChild(js);
+  });
+  Promise.all([data, leaflet]).then(function(res) {
+    var d = res[0];
     btn.remove();
     var el = document.getElementById('mini'); el.hidden = false;
-    var pts = ${JSON.stringify(o.points)};
     var colours = ${JSON.stringify(COLOURS)};
     var here = ${JSON.stringify(o.tree.id)};
     var map = L.map(el, {zoomControl:false, dragging:false, touchZoom:false, scrollWheelZoom:false,
       doubleClickZoom:false, boxZoom:false, keyboard:false});
-    L.tileLayer(${JSON.stringify(o.tileUrl)},
+    L.tileLayer(d.tileUrl,
       {attribution:${JSON.stringify(ATTRIBUTION)}, subdomains:'abcd', maxNativeZoom:18, maxZoom:20}).addTo(map);
     map.attributionControl.setPrefix(false);
-    pts.forEach(function(p){
+    d.points.forEach(function(p){
       var me = p.id === here;
       L.circleMarker([p.lat, p.lng], {radius: me ? 13 : 8, color:'#fff', weight: me ? 3 : 2,
         fillColor: colours[me ? 'ok' : p.status], fillOpacity:1, interactive:false}).addTo(map);
       if (me) map.setView([p.lat, p.lng], 18);
     });
-  };
-  document.head.appendChild(js);
+  }).catch(function() {
+    btn.disabled = false; btn.textContent = 'Couldn\u2019t load \u2014 try again';
+  });
 };
 <\/script>` : `<p><a href="${o.mapUrl}" target="_top">View the tree map \u203a</a></p>`;
 

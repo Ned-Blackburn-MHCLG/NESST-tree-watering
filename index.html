@@ -57,7 +57,7 @@ function applyPreview(d, mode) {
   c.info.inSeason = mode === 'in';
   c.points.forEach(function(p) {
     var v = p.views ? p.views[mode] : mode === 'out' ? {status:'rest', rest:'season', due:null} : null;
-    if (v) { p.status = v.status; p.rest = v.rest; p.due = v.due; }
+    if (v) { p.status = v.status; p.rest = v.rest; p.due = v.due; p.urgency = v.urgency || 0; }
   });
   return c;
 }
@@ -81,10 +81,15 @@ function draw() {
   var info = d.info;
   info.season = info.season || 'May\u2013Sep';
   info.focus = (params.get('tree') || '').trim().toLowerCase();
-  var colours = {overdue:'#c0392b', never:'#5d6d7e', soon:'#e67e22', ok:'#27ae60', rest:'#7f9cc0'};
+  var colours = {overdue:'#c0392b', never:'#5d6d7e', soon:'#e67e22', ok:'#27ae60', rest:'#7f9cc0', amey:'#b4bec6'};
   var offSeason = info.inSeason === false;
   var labels = {ok:'Watered recently', soon:'Due within 2 days', overdue:'Overdue',
-    never:'No watering recorded', rest:'Established — no regular watering'};
+    never:'No watering recorded', rest:'Established — no regular watering', amey:'Watered weekly by Amey'};
+  // Amey trees get their own colour so they don't swamp the map
+  function key(p) { return p.status === 'rest' && p.rest === 'amey' ? 'amey' : p.status; }
+  function esc(s) {
+    return String(s).replace(/[&<>"]/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; });
+  }
   if (currentMap) currentMap.remove();
   var map = currentMap = L.map('map', {maxZoom:20}); // tiles stop at 18 and are enlarged beyond that
   L.tileLayer(d.tileUrl,
@@ -98,22 +103,29 @@ function draw() {
   }
 
   function popupHtml(p) {
-    var h = '<div class="pop"><b>' + p.species + '</b><br><span class="muted">' + p.location + '</span><br><br>';
+    var h = '<div class="pop"><b>' + esc(p.species) + '</b><br><span class="muted">' + esc(p.location) + '</span>';
+    if (p.planted) h += '<br><span class="muted">Planted ' + esc(p.planted) + (p.age ? ' · ' + esc(p.age) : '') + '</span>';
+    if (p.responsibility) h += '<br><span class="muted">Looked after by: ' + esc(p.responsibility) + '</span>';
+    h += '<br><br>';
     if (p.lastTap) h += 'Last watered: ' + p.lastTap + '<br>';
     else h += 'No watering recorded yet<br>';
     if (p.rainReset && info.rain) h += 'Heavy rain (' + info.rain.mm + ' mm, ' + info.rain.when + ') counted as a watering<br>';
+    else if (p.fromSeasonStart && p.due) h += 'Counted from the start of the season<br>';
     if (p.rest === 'season') h += 'Out of season (' + info.season + ') — water only in a long dry spell<br>';
-    else if (p.interval) h += p.interval + '<br>';
+    else if (p.interval) h += esc(p.interval) + '<br>';
     if (p.due) h += (p.status === 'overdue' ? '<b style="color:' + colours.overdue + '">Overdue</b> since ' : 'Next due: ') + p.due + '<br>';
+    if (p.litres7) h += 'About ' + p.litres7 + ' L logged in the last 7 days' +
+      (p.litresAssumed ? ' <span class="muted">(' + p.litresAssumed + ' without an amount, counted as ' +
+        (info.defaultLitres || 5) + ' L)</span>' : '') + '<br>';
     h += '<span class="muted">Waterings: ' + p.count30 + ' in last 30 days · ' + p.countYear + ' this year</span></div>';
     return h;
   }
 
-  var rank = {rest:-1, ok:0, soon:1, never:2, overdue:3};
+  var rank = {amey:-2, rest:-1, ok:0, soon:1, never:2, overdue:3};
   var cluster = L.markerClusterGroup({
     maxClusterRadius: 45,
     iconCreateFunction: function(c) {
-      var worst = 'rest';
+      var worst = 'amey';
       c.getAllChildMarkers().forEach(function(m){
         if (rank[m.options._status] > rank[worst]) worst = m.options._status;
       });
@@ -128,8 +140,8 @@ function draw() {
 
   var bounds = [], markers = {};
   pts.forEach(function(p){
-    var m = L.circleMarker([p.lat, p.lng], {radius:11, color:'#fff', weight:2.5,
-      fillColor: colours[p.status], fillOpacity:1, _status: p.status});
+    var m = L.circleMarker([p.lat, p.lng], {radius: p.amey ? 7 : 11, color:'#fff', weight: p.amey ? 2 : 2.5,
+      fillColor: colours[key(p)], fillOpacity:1, _status: key(p)});
     m.bindPopup(popupHtml(p));
     cluster.addLayer(m);
     markers[p.id] = m;
@@ -150,12 +162,18 @@ function draw() {
   legend.onAdd = function() {
     var d = L.DomUtil.create('div', 'panel legend');
     var h = '';
-    var rows = offSeason ? [] : ['ok','soon','overdue','never'];
+    var rows = offSeason ? [] : ['ok','soon','overdue'];
+    if (pts.some(function(p){ return p.status === 'never'; })) rows.push('never');
     if (offSeason) labels.rest = 'Out of season (' + info.season + ') — no watering needed';
-    if (offSeason || pts.some(function(p){ return p.status === 'rest'; })) rows.push('rest');
+    if (offSeason || pts.some(function(p){ return key(p) === 'rest'; })) rows.push('rest');
+    if (pts.some(function(p){ return key(p) === 'amey'; })) rows.push('amey');
     rows.forEach(function(s){
       h += '<div class="row"><span class="dot" style="background:'+colours[s]+'"></span>'+labels[s]+'</div>';
     });
+    if (info.drought) h += '<div class="note"><b>Drought mode is on.</b> Young trees need water more often, ' +
+      'and young Amey trees need a top-up too.</div>';
+    else if (!offSeason) h += '<div class="note">The list of trees needing water puts the most urgent first: ' +
+      'younger trees need water more often.</div>';
     h += '<div class="note">' + (info.rainError ? 'Rain data unavailable right now.' :
       'Heavy rain (' + info.rainMm + ' mm+ in 48 h) counts as a watering.' +
       (info.rain ? ' Last: ' + info.rain.when + '.' :
@@ -168,8 +186,10 @@ function draw() {
   legend.addTo(map);
 
   // Trees needing water, collapsed by default so the map stays the focus
+  // Worst status first, then by urgency (days since watering ÷ the tree's
+  // interval), so younger trees come before older ones dry for the same time
   var needy = pts.filter(function(p){ return p.status !== 'ok' && p.status !== 'rest'; }).sort(function(a, b){
-    return rank[b.status] - rank[a.status] || (b.days || 0) - (a.days || 0);
+    return rank[b.status] - rank[a.status] || (b.urgency || 0) - (a.urgency || 0) || (b.days || 0) - (a.days || 0);
   });
   var due = L.control({position:'topright'});
   due.onAdd = function() {
@@ -187,7 +207,7 @@ function draw() {
     needy.forEach(function(p){
       var li = L.DomUtil.create('li', '', ul);
       li.innerHTML = '<span class="dot" style="background:'+colours[p.status]+'"></span>' +
-        p.species + ', ' + p.location.split(',')[0] +
+        '<span>' + esc(p.species) + ', ' + esc(p.location) + '</span>' +
         '<small>' + (p.days === null ? 'never' : p.days + ' d') + '</small>';
       li.onclick = function(){ ul.style.display = 'none'; showTree(p.id); };
     });

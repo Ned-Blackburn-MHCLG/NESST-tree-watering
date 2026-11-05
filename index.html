@@ -16,7 +16,13 @@
   .legend .row{display:flex;align-items:center;gap:7px;margin:2px 0}
   .dot{width:12px;height:12px;border-radius:50%;border:2px solid #fff;
     box-shadow:0 0 0 1px rgba(0,0,0,.15);flex:none}
+  .dot.sq{border-radius:3px}
+  .dot.hollow{background:#fff;box-shadow:none;border-color:#1f2d24}
   .legend .note{color:#56645b;font-size:11.5px;margin-top:6px}
+  .legend .shapes{display:flex;gap:12px;margin-top:6px;padding-top:6px;border-top:1px solid #e3e9e4}
+  .mk{width:100%;height:100%;box-sizing:border-box;border:2.5px solid #fff;border-radius:50%;
+    box-shadow:0 0 0 1px rgba(0,0,0,.18)}
+  .mk.sq{border-radius:3px;border-width:2px}
   .due{max-width:240px}
   .due button{all:unset;cursor:pointer;display:block;padding:7px 11px;font-weight:600}
   .due ul{list-style:none;margin:0;padding:0 0 4px;max-height:40vh;overflow:auto;
@@ -30,8 +36,10 @@
   .toast{position:absolute;left:50%;top:12px;transform:translateX(-50%);z-index:1000;
     background:#1f2d24;color:#fff;padding:8px 12px;border-radius:8px;font-size:13px;
     max-width:80vw;text-align:center}
-  .preview{padding:7px 9px;display:flex;flex-wrap:wrap;gap:5px;max-width:200px;justify-content:flex-end}
-  .preview .pv-title{width:100%;font-weight:600;font-size:12px;color:#56645b}
+  .preview{padding:7px 9px;display:flex;flex-direction:column;gap:6px;max-width:250px}
+  .preview .pv-title{font-weight:600;font-size:12px;color:#56645b}
+  .preview .pv-row{display:flex;flex-wrap:wrap;gap:5px;align-items:center;justify-content:flex-end}
+  .preview .pv-label{font-size:12px;color:#56645b;margin-right:auto}
   .preview button{font:inherit;font-size:12px;border:1px solid #c9d8cb;background:#fff;color:#1f2d24;
     border-radius:999px;padding:4px 9px;cursor:pointer}
   .preview button.on{background:#1f6f3a;border-color:#1f6f3a;color:#fff}
@@ -46,20 +54,47 @@
 var DATA_URL = 'https://script.google.com/macros/s/AKfycbzwHppa_Dd1riWXpchENKyJNhrdF-0Tnp-jpdOT53kwbQwwfuPJdamU06XHJ8D9Pgm6dw/exec';
 
 var data, currentMap;
-// ?preview shows a season toggle; ?preview=in / ?preview=out opens that view
+// Demo panel for trying other seasons and drought mode. Temporary: set to
+// false to hide it again, after which only ?preview links show it.
+// ?preview=in / ?preview=out and ?drought=on / ?drought=off open a view directly.
+var DEMO_CONTROLS = true;
 var params = new URLSearchParams(location.search);
-var preview = params.has('preview') ? (params.get('preview') || 'actual') : null;
+var preview = {season: params.get('preview') || 'actual', drought: params.get('drought') || 'actual'};
+if (['actual', 'in', 'out'].indexOf(preview.season) < 0) preview.season = 'actual';
+if (['actual', 'on', 'off'].indexOf(preview.drought) < 0) preview.drought = 'actual';
+var showPreview = DEMO_CONTROLS || params.has('preview') || params.has('drought');
 
-// Copy of the data as it would look in or out of season, for previews
-function applyPreview(d, mode) {
-  if (!mode || mode === 'actual') return d;
+function previewing() { return preview.season !== 'actual' || preview.drought !== 'actual'; }
+
+// Copy of the data as it would look in the previewed season and drought mode
+function applyPreview(d) {
+  if (!previewing()) return d;
   var c = JSON.parse(JSON.stringify(d));
-  c.info.inSeason = mode === 'in';
+  var drought = preview.drought === 'actual' ? !!d.info.drought : preview.drought === 'on';
+  var normal = 'normalSeason' in d.info ? d.info.normalSeason : d.info.inSeason;
+  var season = preview.season === 'actual' ? normal : preview.season === 'in';
+  // Drought mode switches watering on even out of season
+  var mode = drought ? 'drought' : season ? 'in' : 'out';
+  c.info.inSeason = drought || season;
+  c.info.drought = drought;
   c.points.forEach(function(p) {
     var v = p.views ? p.views[mode] : mode === 'out' ? {status:'rest', rest:'season', due:null} : null;
-    if (v) { p.status = v.status; p.rest = v.rest; p.due = v.due; p.urgency = v.urgency || 0; }
+    if (v) {
+      p.status = v.status; p.rest = v.rest; p.due = v.due; p.urgency = v.urgency || 0;
+      if (v.interval) p.interval = v.interval;
+    }
   });
   return c;
+}
+
+function syncUrl() {
+  if (preview.season !== 'actual') params.set('preview', preview.season);
+  else if (DEMO_CONTROLS) params.delete('preview');
+  else params.set('preview', '');
+  if (preview.drought !== 'actual') params.set('drought', preview.drought);
+  else params.delete('drought');
+  var q = params.toString().replace(/preview=(&|$)/, 'preview$1');
+  history.replaceState(null, '', q ? '?' + q : location.pathname);
 }
 
 function load() {
@@ -76,7 +111,7 @@ function load() {
 }
 
 function draw() {
-  var d = applyPreview(data, preview);
+  var d = applyPreview(data);
   var pts = d.points;
   var info = d.info;
   info.season = info.season || 'May\u2013Sep';
@@ -140,8 +175,11 @@ function draw() {
 
   var bounds = [], markers = {};
   pts.forEach(function(p){
-    var m = L.circleMarker([p.lat, p.lng], {radius: p.amey ? 7 : 11, color:'#fff', weight: p.amey ? 2 : 2.5,
-      fillColor: colours[key(p)], fillOpacity:1, _status: key(p)});
+    // Circles for community trees, smaller squares for Amey trees
+    var size = p.amey ? 15 : 22;
+    var m = L.marker([p.lat, p.lng], {_status: key(p), title: p.species + ', ' + p.location,
+      icon: L.divIcon({className: '', iconSize: [size, size], popupAnchor: [0, -size / 2],
+        html: '<div class="mk' + (p.amey ? ' sq' : '') + '" style="background:' + colours[key(p)] + '"></div>'})});
     m.bindPopup(popupHtml(p));
     cluster.addLayer(m);
     markers[p.id] = m;
@@ -168,8 +206,11 @@ function draw() {
     if (offSeason || pts.some(function(p){ return key(p) === 'rest'; })) rows.push('rest');
     if (pts.some(function(p){ return key(p) === 'amey'; })) rows.push('amey');
     rows.forEach(function(s){
-      h += '<div class="row"><span class="dot" style="background:'+colours[s]+'"></span>'+labels[s]+'</div>';
+      h += '<div class="row"><span class="dot' + (s === 'amey' ? ' sq' : '') + '" style="background:' +
+        colours[s] + '"></span>' + labels[s] + '</div>';
     });
+    h += '<div class="shapes"><span class="row"><span class="dot hollow"></span>Community tree</span>' +
+      '<span class="row"><span class="dot hollow sq"></span>Amey tree</span></div>';
     if (info.drought) h += '<div class="note"><b>Drought mode is on.</b> Young trees need water more often, ' +
       'and young Amey trees need a top-up too.</div>';
     else if (!offSeason) h += '<div class="note">The list of trees needing water puts the most urgent first: ' +
@@ -216,25 +257,32 @@ function draw() {
   };
   due.addTo(map);
 
-  if (preview) {
+  if (showPreview) {
     var pv = L.control({position:'topright'});
     pv.onAdd = function() {
       var el = L.DomUtil.create('div', 'panel preview');
       L.DomEvent.disableClickPropagation(el);
-      var canIn = data.info.inSeason !== false || data.points.every(function(p){ return p.views; });
-      el.innerHTML = '<div class="pv-title">' + (preview === 'actual' ? 'Season preview' :
-        'Preview \u2014 not the real status') + '</div>';
-      [['actual','Today'],['in','In season'],['out','Out of season']].forEach(function(o){
-        var b = L.DomUtil.create('button', o[0] === preview ? 'on' : '', el);
-        b.type = 'button'; b.textContent = o[1];
-        if (o[0] === 'in' && !canIn) { b.disabled = true; b.title = 'Needs the latest script deployed'; }
-        b.onclick = function(){
-          preview = o[0];
-          params.set('preview', o[0] === 'actual' ? '' : o[0]);
-          history.replaceState(null, '', '?' + params.toString().replace(/preview=(&|$)/, 'preview$1'));
-          draw();
-        };
-      });
+      el.innerHTML = '<div class="pv-title">' + (previewing() ? 'Preview \u2014 not the real status' :
+        'Demo: try other conditions') + '</div>';
+      var hasViews = data.points.every(function(p){ return p.views; });
+      var hasDrought = data.points.every(function(p){ return p.views && p.views.drought; });
+      var realDrought = !!data.info.drought;
+      function group(label, opts, current, set) {
+        var row = L.DomUtil.create('div', 'pv-row', el);
+        L.DomUtil.create('span', 'pv-label', row).textContent = label;
+        opts.forEach(function(o){
+          var b = L.DomUtil.create('button', o[0] === current ? 'on' : '', row);
+          b.type = 'button'; b.textContent = o[1];
+          b.setAttribute('aria-pressed', o[0] === current ? 'true' : 'false');
+          if (o[2]) { b.disabled = true; b.title = 'Needs the latest script deployed'; }
+          b.onclick = function(){ set(o[0]); syncUrl(); draw(); };
+        });
+      }
+      group('Season', [['actual', 'Today'], ['in', 'In season', data.info.inSeason === false && !hasViews],
+        ['out', 'Out of season']], preview.season, function(v){ preview.season = v; });
+      var droughtOn = preview.drought === 'actual' ? realDrought : preview.drought === 'on';
+      group('Drought', [['off', 'Off'], ['on', 'On', !hasDrought && !realDrought]], droughtOn ? 'on' : 'off',
+        function(v){ preview.drought = (v === 'on') === realDrought ? 'actual' : v; });
       return el;
     };
     pv.addTo(map);

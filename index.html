@@ -19,11 +19,7 @@
   .dot.sq{border-radius:3px}
   .dot.hollow{background:#fff;box-shadow:none;border-color:#1f2d24}
   .legend .note{color:#56645b;font-size:11.5px;margin-top:6px}
-  .legend .shapes{display:flex;gap:12px;margin-top:6px;padding-top:6px;border-top:1px solid #e3e9e4}
-  .mk{width:100%;height:100%;box-sizing:border-box;border:2.5px solid #fff;border-radius:50%;
-    box-shadow:0 0 0 1px rgba(0,0,0,.18)}
-  .mk.sq{border-radius:3px;border-width:2px}
-  .due{max-width:240px}
+  .legend .shapes{display:flex;gap:12px;margin-top:6px;padding-top:6px;border-top:1px solid #e3e9e4}  .due{max-width:240px}
   .due button{all:unset;cursor:pointer;display:block;padding:7px 11px;font-weight:600}
   .due ul{list-style:none;margin:0;padding:0 0 4px;max-height:40vh;overflow:auto;
     border-top:1px solid #e3e9e4}
@@ -53,7 +49,20 @@
 // Apps Script web app URL (Deploy > Manage deployments), ending in /exec
 var DATA_URL = 'https://script.google.com/macros/s/AKfycbzwHppa_Dd1riWXpchENKyJNhrdF-0Tnp-jpdOT53kwbQwwfuPJdamU06XHJ8D9Pgm6dw/exec';
 
-var data, currentMap;
+var data, currentMap, drawn = [];
+
+// Amey trees: a square drawn on the same canvas as the community circles
+var SquareMarker = L.CircleMarker.extend({
+  _updatePath: function() {
+    var r = this._renderer;
+    if (!r._ctx) return L.CircleMarker.prototype._updatePath.call(this); // non-canvas fallback: circle
+    if (!r._drawing || this._empty()) return;
+    var p = this._point, s = Math.max(Math.round(this._radius), 1);
+    r._ctx.beginPath();
+    r._ctx.rect(p.x - s, p.y - s, s * 2, s * 2);
+    r._fillStroke(r._ctx, this);
+  }
+});
 // Demo panel for trying other seasons and drought mode. Temporary: set to
 // false to hide it again, after which only ?preview links show it.
 // ?preview=in / ?preview=out and ?drought=on / ?drought=off open a view directly.
@@ -125,17 +134,10 @@ function draw() {
   function esc(s) {
     return String(s).replace(/[&<>"]/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; });
   }
-  if (currentMap) currentMap.remove();
-  var map = currentMap = L.map('map', {maxZoom:20}); // tiles stop at 18 and are enlarged beyond that
-  L.tileLayer(d.tileUrl,
-    {attribution:'&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions" target="_blank">CARTO</a>', subdomains:'abcd', maxNativeZoom:18, maxZoom:20}).addTo(map);
-
-  function toast(msg) {
-    var t = document.createElement('div');
-    t.className = 'toast'; t.textContent = msg;
-    document.body.appendChild(t);
-    setTimeout(function(){ t.remove(); }, 4000);
-  }
+  var first = !currentMap;
+  var map = currentMap = currentMap || setupMap(d.tileUrl);
+  drawn.forEach(function(x){ x.remove(); });
+  drawn = [];
 
   function popupHtml(p) {
     var h = '<div class="pop"><b>' + esc(p.species) + '</b><br><span class="muted">' + esc(p.location) + '</span>';
@@ -176,24 +178,26 @@ function draw() {
   var bounds = [], markers = {};
   pts.forEach(function(p){
     // Circles for community trees, smaller squares for Amey trees
-    var size = p.amey ? 15 : 22;
-    var m = L.marker([p.lat, p.lng], {_status: key(p), title: p.species + ', ' + p.location,
-      icon: L.divIcon({className: '', iconSize: [size, size], popupAnchor: [0, -size / 2],
-        html: '<div class="mk' + (p.amey ? ' sq' : '') + '" style="background:' + colours[key(p)] + '"></div>'})});
+    var style = {color:'#fff', fillColor: colours[key(p)], fillOpacity:1, _status: key(p)};
+    var m = p.amey ? new SquareMarker([p.lat, p.lng], L.extend({radius:6, weight:2}, style))
+                   : L.circleMarker([p.lat, p.lng], L.extend({radius:10, weight:2.5}, style));
     m.bindPopup(popupHtml(p));
     cluster.addLayer(m);
     markers[p.id] = m;
     bounds.push([p.lat, p.lng]);
   });
   map.addLayer(cluster);
-  if (bounds.length) map.fitBounds(bounds, {padding:[40,40], maxZoom:17});
-  else map.setView([53.48, -1.49], 15);
+  drawn.push(cluster);
+  if (first) {
+    if (bounds.length) map.fitBounds(bounds, {padding:[40,40], maxZoom:17});
+    else map.setView([53.48, -1.49], 15);
+  }
 
   function showTree(id) {
     var m = markers[id];
     if (m) cluster.zoomToShowLayer(m, function(){ m.openPopup(); });
   }
-  if (info.focus) showTree(info.focus);
+  if (first && info.focus) showTree(info.focus);
 
   // Legend
   var legend = L.control({position:'bottomleft'});
@@ -224,7 +228,7 @@ function draw() {
     L.DomEvent.disableClickPropagation(d);
     return d;
   };
-  legend.addTo(map);
+  drawn.push(legend.addTo(map));
 
   // Trees needing water, collapsed by default so the map stays the focus
   // Worst status first, then by urgency (days since watering ÷ the tree's
@@ -255,7 +259,7 @@ function draw() {
     btn.onclick = function(){ ul.style.display = ul.style.display === 'none' ? '' : 'none'; };
     return d;
   };
-  due.addTo(map);
+  drawn.push(due.addTo(map));
 
   if (showPreview) {
     var pv = L.control({position:'topright'});
@@ -285,8 +289,29 @@ function draw() {
         function(v){ preview.drought = (v === 'on') === realDrought ? 'actual' : v; });
       return el;
     };
-    pv.addTo(map);
+    drawn.push(pv.addTo(map));
   }
+
+}
+
+function toast(msg) {
+  var t = document.createElement('div');
+  t.className = 'toast'; t.textContent = msg;
+  document.body.appendChild(t);
+  setTimeout(function(){ t.remove(); }, 4000);
+}
+
+// The map, tiles and location button are made once. Redraws (the demo
+// toggles) only swap the markers and panels, so the view and loaded tiles stay.
+function setupMap(tileUrl) {
+  // Markers are drawn on one canvas rather than as an element per tree,
+  // which keeps panning and zooming smooth. The extra padding draws trees a
+  // little way off-screen, so they don't pop in at the edges after a pan.
+  var map = L.map('map', {maxZoom:20, renderer: L.canvas({padding:0.5, tolerance:5})});
+  // Tiles stop at 18 and are enlarged beyond that. keepBuffer holds on to
+  // more tiles around the view, so panning back doesn't show grey squares.
+  L.tileLayer(tileUrl,
+    {attribution:'&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions" target="_blank">CARTO</a>', subdomains:'abcd', maxNativeZoom:18, maxZoom:20, keepBuffer:4}).addTo(map);
 
   // Show my location
   var locate = L.control({position:'topleft'});
@@ -315,6 +340,7 @@ function draw() {
     toast(e.code === 1 ? 'Location permission was blocked, so we can’t show where you are.'
                        : 'Couldn’t find your location just now.');
   });
+  return map;
 }
 
 load();

@@ -13,7 +13,18 @@ const DEFAULT_SEASON = [5, 9];
 // first year, fortnightly in the second, monthly in the third (Cambridge City
 // Council guidance), then established. Trees without a planted date use year 1.
 const AGE_MULTIPLIERS = [1, 2, 4];
-const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+const ORDINALS = ['1st', '2nd', '3rd'];
+// In drought mode (Summary!H5) intervals are multiplied by this, and established
+// trees come back onto a monthly schedule. Amey trees, which Amey waters weekly,
+// then need a community top-up on the normal (non-drought) schedule.
+const DROUGHT_FACTOR = 0.5;
+// Litres assumed when a volunteer doesn't pick an amount; override in Summary!H6
+const DEFAULT_LITRES = 5;
+// Choices on the tap page; the last one is shown as "20 L+"
+const LITRE_OPTIONS = [5, 10, 15, 20];
+// How long after a tap its amount can still be changed
+const LITRES_EDIT_MS = 60 * 60 * 1000;
+const MONTHS =['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
 function doGet(e) {
   if (e.parameter.view === 'data') {
@@ -54,17 +65,21 @@ function parseMonth(v) {
 function getSettings(ss) {
   let overdue = 7, rainMm = DEFAULT_RAIN_MM;
   let seasonStart = DEFAULT_SEASON[0], seasonEnd = DEFAULT_SEASON[1];
+  let drought = false, defaultLitres = DEFAULT_LITRES;
   const summary = ss.getSheetByName('Summary');
   if (summary) {
-    const v = summary.getRange('H1:H4').getValues().map(function(r) { return r[0]; });
+    const v = summary.getRange('H1:H6').getValues().map(function(r) { return r[0]; });
     if (typeof v[0] === 'number' && v[0] > 0) overdue = v[0];
     if (typeof v[1] === 'number' && v[1] > 0) rainMm = v[1];
     if (parseMonth(v[2]) && parseMonth(v[3])) {
       seasonStart = parseMonth(v[2]);
       seasonEnd = parseMonth(v[3]);
     }
+    drought = v[4] === true || /^(on|yes|y|true)$/i.test(String(v[4]).trim());
+    if (typeof v[5] === 'number' && v[5] > 0) defaultLitres = v[5];
   }
-  return {overdue: overdue, rainMm: rainMm, seasonStart: seasonStart, seasonEnd: seasonEnd};
+  return {overdue: overdue, rainMm: rainMm, seasonStart: seasonStart, seasonEnd: seasonEnd,
+    drought: drought, defaultLitres: defaultLitres};
 }
 
 function inSeason(settings, now) {
@@ -74,31 +89,76 @@ function inSeason(settings, now) {
     : m >= settings.seasonStart || m <= settings.seasonEnd;
 }
 
+// Drought mode switches watering on even outside the usual season
+function activeSeason(settings, now) {
+  return settings.drought || inSeason(settings, now);
+}
+
+// 1st of the month the current season started (only meaningful in season)
+function seasonStartMs(settings, now) {
+  const y = +fmt(now, 'yyyy');
+  return new Date(+fmt(now, 'MM') >= settings.seasonStart ? y : y - 1, settings.seasonStart - 1, 1).getTime();
+}
+
 function seasonLabel(settings) {
   return MONTHS[settings.seasonStart - 1] + '\u2013' + MONTHS[settings.seasonEnd - 1];
 }
 
-// A date, or just a year. A bare year counts as planted on 31 Dec, so the
-// tree is treated as younger (watered more often) rather than older.
+// A date, a planting season ("Winter 25/26") or just a year. A season counts
+// as planted on 1 March at its end, so the following summer is the 1st year.
+// A bare year counts as planted on 31 Dec, so the tree is treated as younger
+// (watered more often) rather than older.
 function parsePlanted(v) {
   if (v instanceof Date) return v.getTime();
   if (typeof v === 'number' && v > 1900 && v < 2200) return new Date(v, 11, 31).getTime();
   const s = String(v).trim();
+  const w = s.match(/^winter\s+(\d{2}|\d{4})\s*[\/-]\s*\d{2,4}$/i);
+  if (w) return new Date((w[1].length === 2 ? 2000 + +w[1] : +w[1]) + 1, 2, 1).getTime();
   if (/^\d{4}$/.test(s)) return new Date(+s, 11, 31).getTime();
   const m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
   if (m) return new Date(+m[3], +m[2] - 1, +m[1]).getTime();
   return parseUKDate(v);
 }
 
-// {days, label}; days is null once the tree is established
+// 0 = 1st year after planting. Trees without a date, or not yet planted
+// (this winter's), count as 1st year.
+function treeYear(tree, now) {
+  if (!tree.planted || tree.planted > now) return 0;
+  return Math.floor((now - tree.planted) / (365.25 * 86400000));
+}
+
+// How often a tree needs community watering, from its age, who looks after it
+// and drought mode. {days, rest, age, label}: days is null when the community
+// doesn't need to water it, and rest says why ('established' or 'amey').
 function wateringInterval(tree, settings, now) {
-  if (!tree.planted || tree.planted > now) {
-    return {days: settings.overdue, label: 'Every ' + settings.overdue + ' days'};
+  const year = treeYear(tree, now);
+  const young = year < AGE_MULTIPLIERS.length;
+  const age = young ? ORDINALS[year] + ' year after planting' : 'Established';
+  const normal = young ? settings.overdue * AGE_MULTIPLIERS[year] : null;
+  const o = {days: null, rest: null, age: age};
+  if (tree.amey) {
+    if (!settings.drought) {
+      o.rest = 'amey';
+      o.label = 'Watered weekly by Amey \u2014 only needs extra water in a drought';
+    } else if (!normal) {
+      o.rest = 'established';
+      o.label = 'Established \u2014 no top-up needed';
+    } else {
+      o.days = normal;
+      o.label = 'Drought: top up every ' + normal + ' days, on top of Amey\u2019s weekly watering';
+    }
+  } else if (settings.drought) {
+    o.days = normal ? Math.max(1, Math.round(normal * DROUGHT_FACTOR))
+      : settings.overdue * AGE_MULTIPLIERS[AGE_MULTIPLIERS.length - 1];
+    o.label = 'Drought: every ' + o.days + ' days' + (normal ? ' (normally ' + normal + ')' : '');
+  } else if (normal) {
+    o.days = normal;
+    o.label = 'Every ' + normal + ' days';
+  } else {
+    o.rest = 'established';
+    o.label = 'Established \u2014 only needed in a drought';
   }
-  const year = Math.floor((now - tree.planted) / (365.25 * 86400000));
-  if (year >= AGE_MULTIPLIERS.length) return {days: null, label: 'Established \u2014 only needed in a drought'};
-  const days = settings.overdue * AGE_MULTIPLIERS[year];
-  return {days: days, label: 'Every ' + days + ' days (' + ['1st', '2nd', '3rd'][year] + ' year after planting)'};
+  return o;
 }
 
 function getTrees(ss) {
@@ -108,17 +168,21 @@ function getTrees(ss) {
     const row = rows[i];
     const id = normId(row[0]);
     if (!id) continue;
+    const responsibility = String(row[6] || '').trim();
     trees.push({
       id: id, rawId: row[0],
       species: String(row[1]), location: String(row[2]),
       lat: parseFloat(row[3]), lng: parseFloat(row[4]),
-      planted: parsePlanted(row[5])
+      planted: parsePlanted(row[5]),
+      plantedText: row[5] instanceof Date ? fmt(row[5].getTime(), 'd MMM yyyy') : String(row[5]).trim(),
+      amey: /^amey\b/i.test(responsibility), responsibility: responsibility
     });
   }
   return trees;
 }
 
-// Returns {treeId: [ms, ...]} sorted oldest first
+// Returns {treeId: [{ms, litres}, ...]} sorted oldest first; litres is null
+// when the volunteer didn't choose an amount
 function getTapsById(ss) {
   const log = ss.getSheetByName('Log').getDataRange().getValues();
   const byId = {};
@@ -128,9 +192,10 @@ function getTapsById(ss) {
     const t = log[i][0];
     const ms = (t instanceof Date) ? t.getTime() : parseUKDate(t);
     if (!ms) continue;
-    (byId[id] = byId[id] || []).push(ms);
+    const litres = +log[i][2];
+    (byId[id] = byId[id] || []).push({ms: ms, litres: litres > 0 ? litres : null});
   }
-  for (const id in byId) byId[id].sort(function(a, b) { return a - b; });
+  for (const id in byId) byId[id].sort(function(a, b) { return a.ms - b.ms; });
   return byId;
 }
 
@@ -189,40 +254,53 @@ function rainLookbackDays(settings) {
 }
 
 function computeStatuses(trees, taps, rain, settings, now) {
-  const season = inSeason(settings, now);
+  const season = activeSeason(settings, now);
+  // In season, trees with no watering since it began count from its first day,
+  // so they get a due date and urgency instead of all showing "never"
+  const baseline = inSeason(settings, now) ? seasonStartMs(settings, now) : 0;
+  const weekAgo = now - 7 * 86400000;
   const monthAgo = now - 30 * 86400000;
   const yearStart = new Date(fmt(now, 'yyyy') + '-01-01T00:00:00').getTime();
   const rainMs = rain && rain.ms ? rain.ms : 0;
   return trees.filter(function(t) { return !isNaN(t.lat) && !isNaN(t.lng); }).map(function(t) {
     const list = taps[t.id] || [];
-    const lastTap = list.length ? list[list.length - 1] : 0;
-    const last = Math.max(lastTap, rainMs);
+    const lastTap = list.length ? list[list.length - 1].ms : 0;
+    const last = Math.max(lastTap, rainMs, baseline);
     const interval = wateringInterval(t, settings, now);
     const days = last ? Math.floor((now - last) / 86400000) : null;
-    // 'rest' = no watering needed: out of season or an established tree.
-    // Both views are sent so the map can preview the other season.
+    // 'rest' = no community watering needed: out of season, an established
+    // tree or one Amey waters. Both views are sent so the map can preview
+    // the other season.
     const views = {
-      in: {status: 'rest', rest: 'established', due: null},
-      out: {status: 'rest', rest: 'season', due: null}
+      in: {status: 'rest', rest: interval.rest, due: null, urgency: 0},
+      out: {status: 'rest', rest: 'season', due: null, urgency: 0}
     };
     if (interval.days) {
       views.in = {
         status: days === null ? 'never'
           : days >= interval.days ? 'overdue' : days >= interval.days - 2 ? 'soon' : 'ok',
         rest: null,
-        due: last ? fmt(last + interval.days * 86400000, 'EEE d MMM') : null
+        due: last ? fmt(last + interval.days * 86400000, 'EEE d MMM') : null,
+        // Share of the interval used up: 1 = due now. Younger trees have shorter
+        // intervals, so they climb faster. Never-watered trees rank by age.
+        urgency: Math.round((days === null ? settings.overdue : days) / interval.days * 100) / 100
       };
     }
     const view = season ? views.in : views.out;
+    const week = list.filter(function(tap) { return tap.ms >= weekAgo; });
     return {
       id: t.id, species: t.species, location: t.location,
       lat: t.lat, lng: t.lng, days: days,
-      status: view.status, rest: view.rest, due: view.due, views: views,
-      interval: interval.label,
+      status: view.status, rest: view.rest, due: view.due, urgency: view.urgency, views: views,
+      interval: interval.label, age: interval.age, planted: t.plantedText,
+      amey: t.amey, responsibility: t.responsibility,
       lastTap: lastTap ? fmt(lastTap) : null,
       rainReset: rainMs > lastTap,
-      count30: list.filter(function(ms) { return ms >= monthAgo; }).length,
-      countYear: list.filter(function(ms) { return ms >= yearStart; }).length
+      fromSeasonStart: baseline > lastTap && baseline >= rainMs,
+      litres7: week.reduce(function(s, tap) { return s + (tap.litres || settings.defaultLitres); }, 0),
+      litresAssumed: week.filter(function(tap) { return !tap.litres; }).length,
+      count30: list.filter(function(tap) { return tap.ms >= monthAgo; }).length,
+      countYear: list.filter(function(tap) { return tap.ms >= yearStart; }).length
     };
   });
 }
@@ -262,19 +340,32 @@ function recordWatering(e) {
   const now = Date.now();
   const cache = CacheService.getScriptCache();
   const tapKey = 'tap:' + id;
-  const cachedTap = +cache.get(tapKey) || 0;
-  const repeat = cachedTap && now - cachedTap < REPEAT_TAP_MS;
+  const cached = readCachedTap(cache.get(tapKey));
+  const repeat = !!cached && now - cached.ms < REPEAT_TAP_MS;
+  let token = repeat ? cached.token : null;
   if (!repeat) {
-    ss.getSheetByName('Log').appendRow([new Date(now), tree.rawId]);
-    SpreadsheetApp.flush();
-    cache.put(tapKey, String(now), REPEAT_TAP_MS / 1000);
+    const log = ss.getSheetByName('Log');
+    // The lock makes the row number certain for the litres buttons. If it
+    // can't be had, the tap is still logged and the buttons are left off.
+    const lock = LockService.getScriptLock();
+    const locked = lock.tryLock(10000);
+    try {
+      log.appendRow([new Date(now), tree.rawId]);
+      SpreadsheetApp.flush();
+      if (locked) token = litresToken(log.getLastRow(), id, now);
+    } finally {
+      if (locked) lock.releaseLock();
+    }
+    cache.put(tapKey, JSON.stringify({ms: now, token: token}), REPEAT_TAP_MS / 1000);
   }
 
   // Everything below only builds the confirmation message. The Log now
   // includes this tap; leave it out (allowing for rounding) to find the one before.
+  const thisTapMs = repeat ? cached.ms : now;
   const list = getTapsById(ss)[id] || [];
-  const earlier = repeat ? list : list.filter(function(ms) { return ms < now - 1000; });
-  const prev = repeat ? cachedTap : earlier.length ? earlier[earlier.length - 1] : 0;
+  const thisTap = list.filter(function(tap) { return Math.abs(tap.ms - thisTapMs) < 2000; })[0];
+  const earlier = list.filter(function(tap) { return tap.ms < thisTapMs - 1000; });
+  const prev = repeat ? cached.ms : earlier.length ? earlier[earlier.length - 1].ms : 0;
 
   const lines = [];
   if (repeat) {
@@ -287,16 +378,23 @@ function recordWatering(e) {
     lines.push('This is the first recorded watering for this tree.');
   }
   const month = fmt(now, 'yyyy-MM');
-  const n = earlier.filter(function(ms) { return fmt(ms, 'yyyy-MM') === month; }).length + (repeat ? 0 : 1);
+  const n = list.filter(function(tap) {
+    return tap.ms <= thisTapMs + 1000 && fmt(tap.ms, 'yyyy-MM') === month;
+  }).length || 1;
   lines.push('That\u2019s ' + n + ' watering' + (n === 1 ? '' : 's') + ' for this tree in ' +
     fmt(now, 'MMMM') + '.');
 
   const settings = getSettings(ss);
-  if (!inSeason(settings, now)) {
+  const interval = wateringInterval(tree, settings, now);
+  if (!activeSeason(settings, now)) {
     lines.push('It\u2019s outside the watering season (' + seasonLabel(settings) +
       '), so watering is only needed in a long dry spell.');
-  } else if (!wateringInterval(tree, settings, now).days) {
+  } else if (interval.rest === 'amey') {
+    lines.push('Amey waters this tree weekly, so it only needs extra water in a drought.');
+  } else if (interval.rest === 'established') {
     lines.push('This tree is established, so it only needs watering in a drought.');
+  } else if (settings.drought) {
+    lines.push('Drought mode is on: ' + interval.label.replace(/^Drought: /, '') + '.');
   }
 
   // The optional mini map fetches ?view=data itself, so the page doesn't carry
@@ -305,8 +403,51 @@ function recordWatering(e) {
     ok: true, mapUrl: mapPageUrl(id),
     heading: repeat ? 'Already recorded \u2014 thanks!' : 'Watered \u2014 thanks!',
     tree: tree, lines: lines,
+    litres: token ? {token: token, current: thisTap ? thisTap.litres : null,
+      defaultLitres: settings.defaultLitres} : null,
     dataUrl: ScriptApp.getService().getUrl() + '?view=data'
   })).addMetaTag('viewport', 'width=device-width, initial-scale=1');
+}
+
+// Cache entries are {ms, token}; older ones are just the tap time
+function readCachedTap(v) {
+  if (!v) return null;
+  if (v.charAt(0) === '{') return JSON.parse(v);
+  return +v ? {ms: +v, token: null} : null;
+}
+
+// Proves a litres change comes from the page that logged that row, so the
+// litres endpoint can't be used to edit other rows of the Log
+function litresToken(row, id, ms) {
+  const props = PropertiesService.getScriptProperties();
+  let secret = props.getProperty('litresSecret');
+  if (!secret) {
+    secret = Utilities.getUuid() + Utilities.getUuid();
+    props.setProperty('litresSecret', secret);
+  }
+  const sig = Utilities.base64EncodeWebSafe(
+    Utilities.computeHmacSha256Signature(row + ':' + id + ':' + ms, secret)).replace(/=+$/, '');
+  return row + '.' + ms + '.' + sig;
+}
+
+// Called from the tap page's litres buttons via google.script.run
+function setLitres(token, litres) {
+  litres = +litres;
+  if (LITRE_OPTIONS.indexOf(litres) < 0) throw new Error('unexpected amount');
+  const parts = String(token).split('.');
+  const row = +parts[0], ms = +parts[1];
+  if (!(row > 1) || !ms || Date.now() - ms > LITRES_EDIT_MS) {
+    throw new Error('this watering can no longer be changed');
+  }
+  const log = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Log');
+  const cells = row <= log.getLastRow() ? log.getRange(row, 1, 1, 2).getValues()[0] : [];
+  const t = cells[0] instanceof Date ? cells[0].getTime() : parseUKDate(cells[0]);
+  // The row must still be the one that was logged (rows can be moved or deleted)
+  if (!t || Math.abs(t - ms) > 2000 || litresToken(row, normId(cells[1]), ms) !== String(token)) {
+    throw new Error('couldn\u2019t find this watering in the log');
+  }
+  log.getRange(row, 3).setValue(litres);
+  return litres;
 }
 
 function mapData(e) {
@@ -320,7 +461,8 @@ function mapData(e) {
       rain: ctx.rain && ctx.rain.ms ? {when: fmt(ctx.rain.ms), mm: ctx.rain.mm} : null,
       rainError: !!(ctx.rain && ctx.rain.error),
       rainDays: rainLookbackDays(ctx.settings),
-      inSeason: inSeason(ctx.settings, now), season: seasonLabel(ctx.settings),
+      inSeason: activeSeason(ctx.settings, now), season: seasonLabel(ctx.settings),
+      drought: ctx.settings.drought, defaultLitres: ctx.settings.defaultLitres,
       updated: fmt(now), focus: normId(e.parameter.tree || '')
     },
     tileUrl: tileUrl(),
@@ -361,7 +503,45 @@ function tileUrl() {
 const ATTRIBUTION = '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap</a> ' +
   '&copy; <a href="https://carto.com/attributions" target="_blank">CARTO</a>';
 
-const COLOURS = {overdue:'#c0392b', never:'#5d6d7e', soon:'#e67e22', ok:'#27ae60', rest:'#7f9cc0'};
+const COLOURS = {overdue:'#c0392b', never:'#5d6d7e', soon:'#e67e22', ok:'#27ae60', rest:'#7f9cc0',
+  amey:'#b4bec6'};
+
+// Optional amount buttons. The watering is already logged; a button only
+// fills in the Litres column of that row.
+function litresHtml(l) {
+  if (!l) return '';
+  const buttons = LITRE_OPTIONS.map(function(n, i) {
+    return '<button type="button" data-l="' + n + '"' + (n === l.current ? ' class="on"' : '') + '>' +
+      n + ' L' + (i === LITRE_OPTIONS.length - 1 ? '+' : '') + '</button>';
+  }).join('');
+  return `
+<div class="litres">
+  <p class="q">How much water did you give? <span class="muted">(optional)</span></p>
+  <div class="opts">${buttons}</div>
+  <p id="lmsg" class="muted">${l.current ? 'Saved as ' + l.current + ' L.' :
+    'Counted as ' + l.defaultLitres + ' L unless you choose.'}</p>
+</div>
+<script>
+(function() {
+  var btns = [].slice.call(document.querySelectorAll('.opts button'));
+  var msg = document.getElementById('lmsg');
+  btns.forEach(function(b) {
+    b.onclick = function() {
+      btns.forEach(function(x) { x.disabled = true; });
+      msg.textContent = 'Saving…';
+      google.script.run.withSuccessHandler(function() {
+        btns.forEach(function(x) { x.disabled = false; x.className = x === b ? 'on' : ''; });
+        msg.textContent = 'Saved as ' + b.textContent + ' — thanks!';
+      }).withFailureHandler(function(err) {
+        btns.forEach(function(x) { x.disabled = false; });
+        msg.textContent = 'Couldn’t save that' + (err && err.message ? ' (' + err.message + ')' : '') +
+          '. Your watering is still recorded.';
+      }).setLitres(${JSON.stringify(l.token)}, +b.getAttribute('data-l'));
+    };
+  });
+})();
+<\/script>`;
+}
 
 // Kept deliberately light for patchy mobile data: no scripts, tiles or tree
 // data load unless the volunteer taps "Show nearby trees"
@@ -401,8 +581,9 @@ document.getElementById('show').onclick = function() {
     map.attributionControl.setPrefix(false);
     d.points.forEach(function(p){
       var me = p.id === here;
-      L.circleMarker([p.lat, p.lng], {radius: me ? 13 : 8, color:'#fff', weight: me ? 3 : 2,
-        fillColor: colours[me ? 'ok' : p.status], fillOpacity:1, interactive:false}).addTo(map);
+      var key = me ? 'ok' : p.status === 'rest' && p.rest === 'amey' ? 'amey' : p.status;
+      L.circleMarker([p.lat, p.lng], {radius: me ? 13 : p.amey ? 6 : 8, color:'#fff', weight: me ? 3 : 2,
+        fillColor: colours[key], fillOpacity:1, interactive:false}).addTo(map);
       if (me) map.setView([p.lat, p.lng], 18);
     });
   }).catch(function() {
@@ -425,11 +606,21 @@ document.getElementById('show').onclick = function() {
     border-radius:10px;padding:10px 16px;margin:20px 0 8px;cursor:pointer}
   #mini{height:200px;border-radius:12px;overflow:hidden;border:1px solid #d5e0d6;margin:20px 0 8px}
   a{color:#1f6f3a;font-weight:600}
+  .muted{color:#56645b}
+  .litres{background:#fff;border:1px solid #d5e0d6;border-radius:12px;padding:12px;margin:20px 0 4px}
+  .litres .q{font-weight:600;margin:0 0 10px}
+  .litres .muted{font-weight:400;font-size:14px}
+  .opts{display:flex;gap:8px}
+  .opts button{flex:1;margin:0;padding:12px 0;font-size:16px}
+  .opts button.on{background:#1f6f3a;border-color:#1f6f3a;color:#fff}
+  .opts button:disabled{opacity:.6}
+  #lmsg{margin:10px 0 0;font-size:14px}
 </style></head><body><div class="wrap">
   <div class="tick">${o.ok ? '\u{1F4A7}' : '\u2753'}</div>
   <h1>${o.heading}</h1>
   ${o.tree ? `<p class="tree">${o.tree.species}</p><p class="where">${o.tree.location}</p>` : ''}
   ${o.lines.map(function(l) { return '<p>' + l + '</p>'; }).join('')}
+  ${litresHtml(o.litres)}
   ${extra}
 </div></body></html>`;
 }

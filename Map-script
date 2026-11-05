@@ -266,33 +266,39 @@ function computeStatuses(trees, taps, rain, settings, now) {
     const list = taps[t.id] || [];
     const lastTap = list.length ? list[list.length - 1].ms : 0;
     const last = Math.max(lastTap, rainMs, baseline);
-    const interval = wateringInterval(t, settings, now);
     const days = last ? Math.floor((now - last) / 86400000) : null;
     // 'rest' = no community watering needed: out of season, an established
-    // tree or one Amey waters. Both views are sent so the map can preview
-    // the other season.
-    const views = {
-      in: {status: 'rest', rest: interval.rest, due: null, urgency: 0},
-      out: {status: 'rest', rest: 'season', due: null, urgency: 0}
-    };
-    if (interval.days) {
-      views.in = {
+    // tree or one Amey waters. Every view is sent so the map can preview the
+    // other season and drought mode.
+    function seasonView(drought) {
+      const interval = wateringInterval(t, Object.assign({}, settings, {drought: drought}), now);
+      if (!interval.days) {
+        return {status: 'rest', rest: interval.rest, due: null, urgency: 0, interval: interval.label};
+      }
+      return {
         status: days === null ? 'never'
           : days >= interval.days ? 'overdue' : days >= interval.days - 2 ? 'soon' : 'ok',
         rest: null,
         due: last ? fmt(last + interval.days * 86400000, 'EEE d MMM') : null,
         // Share of the interval used up: 1 = due now. Younger trees have shorter
         // intervals, so they climb faster. Never-watered trees rank by age.
-        urgency: Math.round((days === null ? settings.overdue : days) / interval.days * 100) / 100
+        urgency: Math.round((days === null ? settings.overdue : days) / interval.days * 100) / 100,
+        interval: interval.label
       };
     }
-    const view = season ? views.in : views.out;
+    const views = {
+      in: seasonView(false),
+      drought: seasonView(true),
+      out: {status: 'rest', rest: 'season', due: null, urgency: 0, interval: null}
+    };
+    const view = !season ? views.out : settings.drought ? views.drought : views.in;
+    const actual = wateringInterval(t, settings, now);
     const week = list.filter(function(tap) { return tap.ms >= weekAgo; });
     return {
       id: t.id, species: t.species, location: t.location,
       lat: t.lat, lng: t.lng, days: days,
       status: view.status, rest: view.rest, due: view.due, urgency: view.urgency, views: views,
-      interval: interval.label, age: interval.age, planted: t.plantedText,
+      interval: view.interval || actual.label, age: actual.age, planted: t.plantedText,
       amey: t.amey, responsibility: t.responsibility,
       lastTap: lastTap ? fmt(lastTap) : null,
       rainReset: rainMs > lastTap,
@@ -462,6 +468,7 @@ function mapData(e) {
       rainError: !!(ctx.rain && ctx.rain.error),
       rainDays: rainLookbackDays(ctx.settings),
       inSeason: activeSeason(ctx.settings, now), season: seasonLabel(ctx.settings),
+      normalSeason: inSeason(ctx.settings, now),
       drought: ctx.settings.drought, defaultLitres: ctx.settings.defaultLitres,
       updated: fmt(now), focus: normId(e.parameter.tree || '')
     },
@@ -582,8 +589,12 @@ document.getElementById('show').onclick = function() {
     d.points.forEach(function(p){
       var me = p.id === here;
       var key = me ? 'ok' : p.status === 'rest' && p.rest === 'amey' ? 'amey' : p.status;
-      L.circleMarker([p.lat, p.lng], {radius: me ? 13 : p.amey ? 6 : 8, color:'#fff', weight: me ? 3 : 2,
-        fillColor: colours[key], fillOpacity:1, interactive:false}).addTo(map);
+      // Circles for community trees, squares for Amey trees
+      var size = me ? 26 : p.amey ? 12 : 16;
+      L.marker([p.lat, p.lng], {interactive:false, keyboard:false, zIndexOffset: me ? 1000 : 0,
+        icon: L.divIcon({className:'', iconSize:[size, size], html:'<div style="width:100%;height:100%;' +
+          'box-sizing:border-box;background:' + colours[key] + ';border:' + (me ? 3 : 2) + 'px solid #fff;' +
+          'border-radius:' + (p.amey ? '3px' : '50%') + ';box-shadow:0 0 0 1px rgba(0,0,0,.15)"></div>'})}).addTo(map);
       if (me) map.setView([p.lat, p.lng], 18);
     });
   }).catch(function() {

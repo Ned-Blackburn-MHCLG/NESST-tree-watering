@@ -35,6 +35,10 @@ The map's "trees need water" list is sorted by urgency: days since watering ÷ t
 
 After changing `Map-script`, paste it into the Apps Script editor and publish a new version of the existing deployment (Deploy > Manage deployments > Edit > New version), so the web app URL on the tags stays the same.
 
-### Season preview
+### Demo controls (season and drought preview)
 
-Add `?preview` to the map link to show a toggle between today's view, the in-season view and the out-of-season view. Use `?preview=in` or `?preview=out` to open straight in one of them. A previewed view is labelled "Preview — not the real status". The toggle stays hidden on the normal link.
+For now the map always shows a demo panel. It switches between today's view, in season and out of season, and turns drought mode on or off. Nothing in the sheet changes, and a previewed view is labelled "Preview — not the real status". Links can open a view directly: `?preview=in`, `?preview=out`, `?drought=on`, `?drought=off`.
+
+To hide the panel again, set `DEMO_CONTROLS = false` in `index.html`. After that, only links containing `?preview` or `?drought` show it.
+
+On the map, community trees are circles and Amey trees are smaller squares.

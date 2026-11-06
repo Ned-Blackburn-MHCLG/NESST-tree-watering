@@ -5,7 +5,7 @@ const REPEAT_TAP_MS = 5 * 60 * 1000;
 // so only a genuine soaking resets the clock, not a passing shower.
 const DEFAULT_RAIN_MM = 25;
 const RAIN_WINDOW_HOURS = 48;
-const MAP_PAGE_URL = 'https://nesst-trees.github.io/NESST-tree-watering/';
+const MAP_PAGE_URL = 'https://nesst-trees.github.io/';
 // Watering season (months, inclusive); override in Summary!H3 and H4.
 // Guidance focuses on May-Aug; September is included as it can still be dry.
 const DEFAULT_SEASON = [5, 9];

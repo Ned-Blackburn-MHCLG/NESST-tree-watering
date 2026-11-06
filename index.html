@@ -36,6 +36,14 @@
   .due ol{list-style:none;margin:0;padding:0 0 4px}
   .due li{display:flex;gap:7px;align-items:center;padding:7px 11px;cursor:pointer;border-bottom:1px solid #f0f3f0}
   .due li:hover{background:#f1f5f1}
+  /* "!" badge for newly planted trees that are overdue */
+  .flag{display:inline-block;flex:none;width:16px;height:16px;border-radius:50%;background:#1f2d24;color:#fff;
+    font:700 11px/16px system-ui,-apple-system,sans-serif;text-align:center;box-shadow:0 0 0 1.5px #fff}
+  .flag.sm{width:14px;height:14px;font-size:10px;line-height:14px;margin-right:3px;vertical-align:-2px}
+  .cl{position:relative;width:34px;height:34px}
+  .cl .flag{position:absolute;top:-6px;right:-8px;width:auto;min-width:16px;padding:0 4px;border-radius:8px;
+    box-sizing:border-box;font-size:10.5px}
+  .due button .flag{margin-left:4px;vertical-align:-2px}
   .due li .n{color:#56645b;font-size:12px;min-width:1.6em;text-align:right;font-variant-numeric:tabular-nums}
   .due li .t{min-width:0}
   .due li .sub{display:block;color:#56645b;font-size:12px}
@@ -92,6 +100,15 @@ function colourFor(status, urgency) {
 function everyDays(p) {
   if (p.every) return p.every;
   return p.urgency && p.days ? Math.round(p.days / p.urgency) : null;
+}
+
+// Newly planted (1st year) trees this many days or more past due get a "!"
+// badge on the map, on clusters and in the list
+var FLAG_GRACE_DAYS = 2;
+function flagged(p) {
+  if (p.status !== 'overdue' || p.days === null || !/^1st year/.test(p.age || '')) return false;
+  var every = everyDays(p);
+  return !!every && p.days - every >= FLAG_GRACE_DAYS;
 }
 
 // Right-hand text in the list of trees needing water
@@ -199,38 +216,76 @@ function draw() {
   var cluster = L.markerClusterGroup({
     maxClusterRadius: 45,
     // A cluster takes the colour of its most urgent tree
+    // and a "!" badge counting its newly planted overdue trees
     iconCreateFunction: function(c) {
-      var worst = 'amey', u = 0;
+      var worst = 'amey', u = 0, flags = 0;
       c.getAllChildMarkers().forEach(function(m){
         var s = m.options._status;
         if (rank[s] > rank[worst]) { worst = s; u = 0; }
         if (s === worst) u = Math.max(u, m.options._urgency || 0);
+        if (m.options._flag) flags++;
       });
       return L.divIcon({
-        html: '<div style="background:'+colourFor(worst, u)+';width:34px;height:34px;'+
-              'border-radius:50%;border:2.5px solid #fff;color:#fff;font:600 13px sans-serif;'+
-              'display:flex;align-items:center;justify-content:center;">'+c.getChildCount()+'</div>',
+        html: '<div class="cl"><div style="background:'+colourFor(worst, u)+';width:34px;height:34px;'+
+              'box-sizing:border-box;border-radius:50%;border:2.5px solid #fff;color:#fff;font:600 13px sans-serif;'+
+              'display:flex;align-items:center;justify-content:center;">'+c.getChildCount()+'</div>'+
+              (flags ? '<span class="flag" title="' + flags + ' newly planted and overdue">!' +
+                (flags > 1 ? ' ' + flags : '') + '</span>' : '') + '</div>',
         className: '', iconSize: [34,34]
       });
     }
   });
 
-  var bounds = [], markers = {};
+  var bounds = [], markers = {}, badges = [];
   pts.forEach(function(p){
     // Amey trees are smaller circles
+    var flag = flagged(p);
     var m = L.circleMarker([p.lat, p.lng], {radius: p.amey ? 6 : 10, weight: p.amey ? 2 : 2.5,
-      color:'#fff', fillColor: colourFor(key(p), p.urgency), fillOpacity:1, _status: key(p), _urgency: p.urgency});
+      color:'#fff', fillColor: colourFor(key(p), p.urgency), fillOpacity:1, _status: key(p), _urgency: p.urgency,
+      _flag: flag});
     m.bindPopup(popupHtml(p));
     cluster.addLayer(m);
     markers[p.id] = m;
     bounds.push([p.lat, p.lng]);
+    if (flag) {
+      // Badge sits on the dot's top-right edge; tapping it opens the tree
+      var r = p.amey ? 6 : 9;
+      var b = L.marker([p.lat, p.lng], {keyboard:false, zIndexOffset:1000, title:'Newly planted and overdue',
+        icon: L.divIcon({className:'', iconSize:[16,16], iconAnchor:[8 - r, 8 + r], html:'<span class="flag">!</span>'})});
+      b.on('click', function(){ m.openPopup(); });
+      b._tree = m;
+      badges.push(b);
+    }
   });
   map.addLayer(cluster);
   drawn.push(cluster);
+
+  // Tree badges show only while their tree is shown on its own (not inside a
+  // cluster or fanned out); clusters carry their own badge
+  var badgeLayer = L.layerGroup().addTo(map), spread = [];
+  function updateBadges() {
+    badges.forEach(function(b){
+      // The cluster library only adds a tree's own dot to the map when it is
+      // shown unclustered (its getVisibleParent only works for HTML markers)
+      var show = map.hasLayer(b._tree) && spread.indexOf(b._tree) < 0;
+      if (show && !badgeLayer.hasLayer(b)) badgeLayer.addLayer(b);
+      else if (!show && badgeLayer.hasLayer(b)) badgeLayer.removeLayer(b);
+    });
+  }
+  function hideBadges() { badgeLayer.clearLayers(); }
+  cluster.on('animationend', updateBadges);
+  cluster.on('spiderfied', function(e){ spread = e.markers; updateBadges(); });
+  cluster.on('unspiderfied', function(){ spread = []; updateBadges(); });
+  map.on('zoomstart', hideBadges);
+  map.on('moveend', updateBadges);
+  drawn.push({remove: function(){
+    map.off('zoomstart', hideBadges); map.off('moveend', updateBadges); badgeLayer.remove();
+  }});
   if (first) {
     if (bounds.length) map.fitBounds(bounds, {padding:[40,40], maxZoom:17});
     else map.setView([53.48, -1.49], 15);
   }
+  updateBadges();
 
   function showTree(id) {
     var m = markers[id];
@@ -256,6 +311,8 @@ function draw() {
     if (offSeason) labels.rest = 'Out of season (' + info.season + ') — no watering needed';
     if (offSeason || pts.some(function(p){ return key(p) === 'rest'; })) h += row('rest');
     if (pts.some(function(p){ return key(p) === 'amey'; })) h += row('amey');
+    if (badges.length) h += '<div class="row"><span class="flag">!</span>Newly planted (1st year), ' +
+      FLAG_GRACE_DAYS + '+ days overdue</div>';
     h += '<div class="shapes"><span class="row"><span class="dot hollow"></span>Community tree</span>' +
       '<span class="row"><span class="dot hollow small"></span>Amey tree</span></div>';
     if (info.drought) h += '<div class="note"><b>Drought mode is on.</b> Young trees need water more often, ' +
@@ -289,18 +346,22 @@ function draw() {
       btn.textContent = offSeason ? 'Out of season — no watering needed' : '✓ All trees watered';
       return d;
     }
-    btn.textContent = needy.length + (needy.length === 1 ? ' tree needs' : ' trees need') + ' water ▾';
+    // The button also counts newly planted overdue trees, behind a "!" badge
+    btn.innerHTML = needy.length + (needy.length === 1 ? ' tree needs' : ' trees need') + ' water' +
+      (badges.length ? ' <span class="flag" title="Newly planted and overdue">!</span> ' + badges.length : '') +
+      ' <span class="arrow">▾</span>';
     btn.setAttribute('aria-expanded', 'false');
     var drop = L.DomUtil.create('div', 'drop', d);
     drop.hidden = true;
     drop.innerHTML = '<p class="head"><b>Most urgent first.</b> Ranked by time without water against how often ' +
-      'each tree needs it, so young trees rise fastest.</p>';
+      'each tree needs it, so young trees rise fastest.' + (badges.length ? ' <span class="flag sm">!</span>marks ' +
+      'newly planted trees ' + FLAG_GRACE_DAYS + '+ days overdue.' : '') + '</p>';
     var ol = L.DomUtil.create('ol', '', drop);
     function toggle(open) {
       drop.hidden = !open;
       d.classList.toggle('open', open);
       btn.setAttribute('aria-expanded', open ? 'true' : 'false');
-      btn.textContent = btn.textContent.replace(/[▾▴]$/, open ? '▴' : '▾');
+      btn.querySelector('.arrow').textContent = open ? '▴' : '▾';
     }
     needy.forEach(function(p, i){
       var li = L.DomUtil.create('li', '', ol);
@@ -311,7 +372,8 @@ function draw() {
         '<span class="dot" style="background:' + colourFor(p.status, p.urgency) + '"></span>' +
         '<span class="t">' + esc(p.species) + ', ' + esc(p.location) +
         (sub ? '<span class="sub">' + esc(sub) + '</span>' : '') + '</span>' +
-        '<small>' + dueText(p, every) + '</small>';
+        '<small>' + (flagged(p) ? '<span class="flag sm" title="Newly planted and overdue">!</span>' : '') +
+        dueText(p, every) + '</small>';
       li.onclick = function(){ toggle(false); showTree(p.id); };
     });
     btn.onclick = function(){ toggle(drop.hidden); };

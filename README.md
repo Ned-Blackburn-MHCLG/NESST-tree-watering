@@ -37,7 +37,7 @@ After changing `Map-script`, paste it into the Apps Script editor and publish a 
 
 ### Demo controls (season and drought preview)
 
-For now the map always shows a demo panel. It switches between today's view, in season and out of season, and turns drought mode on or off. Nothing in the sheet changes, and a previewed view is labelled "Preview — not the real status". Links can open a view directly: `?preview=in`, `?preview=out`, `?drought=on`, `?drought=off`.
+For now the map always shows a small demo panel with two switches: Season (In / Out) and Drought (Off / On). Each switch starts on the real state; picking the other option previews it, and picking the real one again returns to it. Nothing in the sheet changes. Links can open a view directly: `?preview=in`, `?preview=out`, `?drought=on`, `?drought=off`.
 
 To hide the panel again, set `DEMO_CONTROLS = false` in `index.html`. After that, only links containing `?preview` or `?drought` show it.
 

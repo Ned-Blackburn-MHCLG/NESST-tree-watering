@@ -63,14 +63,16 @@
   .toast{position:absolute;left:50%;top:12px;transform:translateX(-50%);z-index:1000;
     background:#1f2d24;color:#fff;padding:8px 12px;border-radius:8px;font-size:13px;
     max-width:80vw;text-align:center}
-  .preview{padding:6px 8px;display:flex;flex-direction:column;align-items:flex-start;gap:5px}
-  .preview .pv-row .pv-label{min-width:52px}
-  .preview .pv-note{font-size:11.5px;color:#8a4b00;max-width:240px}
-  .preview .pv-row{display:flex;gap:4px;align-items:center}
-  .preview .pv-label{font-size:12px;color:#56645b;padding-right:3px}
+  /* Each switch is a label over two equal buttons, In/On left and Out/Off right */
+  .preview{padding:6px 8px;display:flex;flex-direction:column;gap:6px}
+  .preview .pv-note{font-size:11.5px;color:#8a4b00;width:150px}
+  .preview .pv-label{display:block;font-size:12px;color:#56645b;margin-bottom:3px}
+  .preview .pv-btns{display:grid;grid-template-columns:1fr 1fr;gap:4px}
   .preview button{font:inherit;font-size:12px;border:1px solid #c9d8cb;background:#fff;color:#1f2d24;
-    border-radius:999px;padding:4px 9px;cursor:pointer}
+    border-radius:999px;padding:4px 0;min-width:40px;text-align:center;cursor:pointer}
+  /* Selected: green for In/On, grey for Out/Off */
   .preview button.on{background:#1f6f3a;border-color:#1f6f3a;color:#fff}
+  .preview button.on.neg{background:#6b7470;border-color:#6b7470}
   .preview button:disabled{opacity:.45;cursor:default}
   .pop b{font-size:14px}
   .pop .muted{color:#56645b}
@@ -434,8 +436,10 @@ function draw() {
       function group(label, opts, current, set) {
         var row = L.DomUtil.create('div', 'pv-row', el);
         L.DomUtil.create('span', 'pv-label', row).textContent = label;
+        var btns = L.DomUtil.create('div', 'pv-btns', row);
         opts.forEach(function(o){
-          var b = L.DomUtil.create('button', o[0] === current ? 'on' : '', row);
+          var neg = o[0] === 'out' || o[0] === 'off';
+          var b = L.DomUtil.create('button', (o[0] === current ? 'on' : '') + (neg ? ' neg' : ''), btns);
           b.type = 'button'; b.textContent = o[1];
           b.setAttribute('aria-pressed', o[0] === current ? 'true' : 'false');
           if (o[2]) { b.disabled = true; b.title = 'Needs the latest script deployed'; }
@@ -447,7 +451,7 @@ function draw() {
       group('Season', [['in', 'In', !realSeason && !hasViews], ['out', 'Out']], seasonIn ? 'in' : 'out',
         function(v){ preview.season = (v === 'in') === realSeason ? 'actual' : v; });
       var droughtOn = preview.drought === 'actual' ? realDrought : preview.drought === 'on';
-      group('Drought', [['off', 'Off'], ['on', 'On', !hasDrought && !realDrought]], droughtOn ? 'on' : 'off',
+      group('Drought', [['on', 'On', !hasDrought && !realDrought], ['off', 'Off']], droughtOn ? 'on' : 'off',
         function(v){ preview.drought = (v === 'on') === realDrought ? 'actual' : v; });
       // The live data comes from the deployed Apps Script; an older version
       // doesn't send the drought view, so say why the button is greyed out

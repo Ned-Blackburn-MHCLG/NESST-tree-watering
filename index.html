@@ -15,27 +15,42 @@
   .legend{padding:8px 10px;max-width:220px}
   .legend .row{display:flex;align-items:center;gap:7px;margin:2px 0}
   .dot{width:12px;height:12px;border-radius:50%;border:2px solid #fff;
-    box-shadow:0 0 0 1px rgba(0,0,0,.15);flex:none}
-  .dot.sq{border-radius:3px}
+    box-shadow:0 0 0 1px rgba(0,0,0,.15);flex:none;box-sizing:content-box}
+  .dot.small{width:7px;height:7px;margin:0 2.5px}
   .dot.hollow{background:#fff;box-shadow:none;border-color:#1f2d24}
   .legend .note{color:#56645b;font-size:11.5px;margin-top:6px}
-  .legend .shapes{display:flex;gap:12px;margin-top:6px;padding-top:6px;border-top:1px solid #e3e9e4}  .due{max-width:240px}
+  .legend .shapes{display:flex;gap:12px;margin-top:6px;padding-top:6px;border-top:1px solid #e3e9e4}
+  .legend .ramp{margin:4px 0 2px}
+  .legend .ramp .bar{height:9px;border-radius:5px}
+  .legend .ramp .ends{display:flex;justify-content:space-between;font-size:11.5px;color:#56645b;margin-top:2px}
+  /* The list of trees needing water sits above the other panels when open */
+  .leaflet-top.leaflet-right{z-index:1001}
+  .due{max-width:240px}
+  .due.open{width:min(340px, calc(100vw - 70px));max-width:none}
   .due button{all:unset;cursor:pointer;display:block;padding:7px 11px;font-weight:600}
-  .due ul{list-style:none;margin:0;padding:0 0 4px;max-height:40vh;overflow:auto;
+  .due .drop{max-height:calc(100vh - 75px);max-height:calc(100dvh - 75px);overflow:auto;
     border-top:1px solid #e3e9e4}
-  .due li{display:flex;gap:7px;align-items:center;padding:6px 11px;cursor:pointer}
+  .due .head{margin:0;padding:8px 11px;color:#56645b;font-size:12px;background:#f6f8f6;
+    border-bottom:1px solid #e3e9e4}
+  .due .head b{color:#1f2d24}
+  .due ol{list-style:none;margin:0;padding:0 0 4px}
+  .due li{display:flex;gap:7px;align-items:center;padding:7px 11px;cursor:pointer;border-bottom:1px solid #f0f3f0}
   .due li:hover{background:#f1f5f1}
-  .due li small{color:#56645b;margin-left:auto;white-space:nowrap}
+  .due li .n{color:#56645b;font-size:12px;min-width:1.6em;text-align:right;font-variant-numeric:tabular-nums}
+  .due li .t{min-width:0}
+  .due li .sub{display:block;color:#56645b;font-size:12px}
+  .due li small{color:#1f2d24;font-weight:600;margin-left:auto;white-space:nowrap;padding-left:6px}
   .locate{all:unset;cursor:pointer;width:30px;height:30px;display:flex;align-items:center;
     justify-content:center;background:#fff;font-size:17px}
   .toast button{font:inherit;margin-left:6px}
   .toast{position:absolute;left:50%;top:12px;transform:translateX(-50%);z-index:1000;
     background:#1f2d24;color:#fff;padding:8px 12px;border-radius:8px;font-size:13px;
     max-width:80vw;text-align:center}
-  .preview{padding:7px 9px;display:flex;flex-direction:column;gap:6px;max-width:250px}
+  .preview{padding:7px 9px;display:flex;flex-direction:column;gap:6px;max-width:220px}
+  .preview .pv-note{font-size:11.5px;color:#8a4b00;max-width:200px}
   .preview .pv-title{font-weight:600;font-size:12px;color:#56645b}
-  .preview .pv-row{display:flex;flex-wrap:wrap;gap:5px;align-items:center;justify-content:flex-end}
-  .preview .pv-label{font-size:12px;color:#56645b;margin-right:auto}
+  .preview .pv-row{display:flex;gap:5px;align-items:center;justify-content:flex-end}
+  .preview .pv-label{font-size:12px;color:#56645b;margin-right:auto;padding-right:8px}
   .preview button{font:inherit;font-size:12px;border:1px solid #c9d8cb;background:#fff;color:#1f2d24;
     border-radius:999px;padding:4px 9px;cursor:pointer}
   .preview button.on{background:#1f6f3a;border-color:#1f6f3a;color:#fff}
@@ -51,18 +66,45 @@ var DATA_URL = 'https://script.google.com/macros/s/AKfycbzwHppa_Dd1riWXpchENKyJN
 
 var data, currentMap, drawn = [];
 
-// Amey trees: a square drawn on the same canvas as the community circles
-var SquareMarker = L.CircleMarker.extend({
-  _updatePath: function() {
-    var r = this._renderer;
-    if (!r._ctx) return L.CircleMarker.prototype._updatePath.call(this); // non-canvas fallback: circle
-    if (!r._drawing || this._empty()) return;
-    var p = this._point, s = Math.max(Math.round(this._radius), 1);
-    r._ctx.beginPath();
-    r._ctx.rect(p.x - s, p.y - s, s * 2, s * 2);
-    r._fillStroke(r._ctx, this);
-  }
-});
+// Colours were checked for colour-blind separation and against the light
+// map. Trees that are due or overdue take a step on RAMP (amber to deep red,
+// getting steadily darker) by how far through their watering interval they
+// are: due now = 1, a whole interval overdue = 2.
+var RAMP = ['#e49a22', '#e48127', '#e2672a', '#d14d2e', '#bf2f2f', '#951f28', '#6d1020'];
+var RAMP_FROM = 0.75, RAMP_TO = 2.5;
+var colours = {ok:'#1b9e77', soon: RAMP[0], overdue: RAMP[4], never:'#5d6d7e', rest:'#7096d4', amey:'#c2c8cd'};
+
+// Amey trees get their own colour so they don't swamp the map
+function key(p) { return p.status === 'rest' && p.rest === 'amey' ? 'amey' : p.status; }
+
+function rampColour(u) {
+  var t = Math.min(1, Math.max(0, (u - RAMP_FROM) / (RAMP_TO - RAMP_FROM)));
+  return RAMP[Math.round(t * (RAMP.length - 1))];
+}
+
+// Data from an older script has no urgency, so falls back to one colour per status
+function colourFor(status, urgency) {
+  return (status === 'soon' || status === 'overdue') && urgency ? rampColour(urgency) : colours[status];
+}
+
+// Days between waterings for this tree (sent by the script; worked out from
+// urgency for data from an older script)
+function everyDays(p) {
+  if (p.every) return p.every;
+  return p.urgency && p.days ? Math.round(p.days / p.urgency) : null;
+}
+
+// Right-hand text in the list of trees needing water
+function dueText(p, every) {
+  if (p.status === 'never' || p.days === null) return 'never watered';
+  if (!every) return p.days + ' d';
+  var over = p.days - every;
+  return over > 0 ? over + ' d overdue' : over === 0 ? 'due today' : 'due in ' + (-over) + ' d';
+}
+
+function esc(s) {
+  return String(s).replace(/[&<>"]/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; });
+}
 // Demo panel for trying other seasons and drought mode. Temporary: set to
 // false to hide it again, after which only ?preview links show it.
 // ?preview=in / ?preview=out and ?drought=on / ?drought=off open a view directly.
@@ -90,6 +132,7 @@ function applyPreview(d) {
     var v = p.views ? p.views[mode] : mode === 'out' ? {status:'rest', rest:'season', due:null} : null;
     if (v) {
       p.status = v.status; p.rest = v.rest; p.due = v.due; p.urgency = v.urgency || 0;
+      p.every = v.every || null;
       if (v.interval) p.interval = v.interval;
     }
   });
@@ -125,15 +168,9 @@ function draw() {
   var info = d.info;
   info.season = info.season || 'May\u2013Sep';
   info.focus = (params.get('tree') || '').trim().toLowerCase();
-  var colours = {overdue:'#c0392b', never:'#5d6d7e', soon:'#e67e22', ok:'#27ae60', rest:'#7f9cc0', amey:'#b4bec6'};
   var offSeason = info.inSeason === false;
-  var labels = {ok:'Watered recently', soon:'Due within 2 days', overdue:'Overdue',
-    never:'No watering recorded', rest:'Established — no regular watering', amey:'Watered weekly by Amey'};
-  // Amey trees get their own colour so they don't swamp the map
-  function key(p) { return p.status === 'rest' && p.rest === 'amey' ? 'amey' : p.status; }
-  function esc(s) {
-    return String(s).replace(/[&<>"]/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; });
-  }
+  var labels = {ok:'Watered recently', never:'No watering recorded',
+    rest:'Established — no regular watering', amey:'Watered weekly by Amey'};
   var first = !currentMap;
   var map = currentMap = currentMap || setupMap(d.tileUrl);
   drawn.forEach(function(x){ x.remove(); });
@@ -161,13 +198,16 @@ function draw() {
   var rank = {amey:-2, rest:-1, ok:0, soon:1, never:2, overdue:3};
   var cluster = L.markerClusterGroup({
     maxClusterRadius: 45,
+    // A cluster takes the colour of its most urgent tree
     iconCreateFunction: function(c) {
-      var worst = 'amey';
+      var worst = 'amey', u = 0;
       c.getAllChildMarkers().forEach(function(m){
-        if (rank[m.options._status] > rank[worst]) worst = m.options._status;
+        var s = m.options._status;
+        if (rank[s] > rank[worst]) { worst = s; u = 0; }
+        if (s === worst) u = Math.max(u, m.options._urgency || 0);
       });
       return L.divIcon({
-        html: '<div style="background:'+colours[worst]+';width:34px;height:34px;'+
+        html: '<div style="background:'+colourFor(worst, u)+';width:34px;height:34px;'+
               'border-radius:50%;border:2.5px solid #fff;color:#fff;font:600 13px sans-serif;'+
               'display:flex;align-items:center;justify-content:center;">'+c.getChildCount()+'</div>',
         className: '', iconSize: [34,34]
@@ -177,10 +217,9 @@ function draw() {
 
   var bounds = [], markers = {};
   pts.forEach(function(p){
-    // Circles for community trees, smaller squares for Amey trees
-    var style = {color:'#fff', fillColor: colours[key(p)], fillOpacity:1, _status: key(p)};
-    var m = p.amey ? new SquareMarker([p.lat, p.lng], L.extend({radius:6, weight:2}, style))
-                   : L.circleMarker([p.lat, p.lng], L.extend({radius:10, weight:2.5}, style));
+    // Amey trees are smaller circles
+    var m = L.circleMarker([p.lat, p.lng], {radius: p.amey ? 6 : 10, weight: p.amey ? 2 : 2.5,
+      color:'#fff', fillColor: colourFor(key(p), p.urgency), fillOpacity:1, _status: key(p), _urgency: p.urgency});
     m.bindPopup(popupHtml(p));
     cluster.addLayer(m);
     markers[p.id] = m;
@@ -204,21 +243,25 @@ function draw() {
   legend.onAdd = function() {
     var d = L.DomUtil.create('div', 'panel legend');
     var h = '';
-    var rows = offSeason ? [] : ['ok','soon','overdue'];
-    if (pts.some(function(p){ return p.status === 'never'; })) rows.push('never');
+    function row(s) {
+      return '<div class="row"><span class="dot" style="background:' + colours[s] + '"></span>' + labels[s] + '</div>';
+    }
+    if (!offSeason) {
+      h += row('ok');
+      // How overdue, for the tree's age: the same steps the markers use
+      h += '<div class="ramp"><div class="bar" style="background:linear-gradient(to right,' + RAMP.join(',') +
+        ')"></div><div class="ends"><span>Due soon</span><span>Overdue</span><span>Very overdue</span></div></div>';
+    }
+    if (pts.some(function(p){ return p.status === 'never'; })) h += row('never');
     if (offSeason) labels.rest = 'Out of season (' + info.season + ') — no watering needed';
-    if (offSeason || pts.some(function(p){ return key(p) === 'rest'; })) rows.push('rest');
-    if (pts.some(function(p){ return key(p) === 'amey'; })) rows.push('amey');
-    rows.forEach(function(s){
-      h += '<div class="row"><span class="dot' + (s === 'amey' ? ' sq' : '') + '" style="background:' +
-        colours[s] + '"></span>' + labels[s] + '</div>';
-    });
+    if (offSeason || pts.some(function(p){ return key(p) === 'rest'; })) h += row('rest');
+    if (pts.some(function(p){ return key(p) === 'amey'; })) h += row('amey');
     h += '<div class="shapes"><span class="row"><span class="dot hollow"></span>Community tree</span>' +
-      '<span class="row"><span class="dot hollow sq"></span>Amey tree</span></div>';
+      '<span class="row"><span class="dot hollow small"></span>Amey tree</span></div>';
     if (info.drought) h += '<div class="note"><b>Drought mode is on.</b> Young trees need water more often, ' +
       'and young Amey trees need a top-up too.</div>';
-    else if (!offSeason) h += '<div class="note">The list of trees needing water puts the most urgent first: ' +
-      'younger trees need water more often.</div>';
+    else if (!offSeason) h += '<div class="note">Overdue is measured against how often each tree needs ' +
+      'water, so young trees turn red sooner.</div>';
     h += '<div class="note">' + (info.rainError ? 'Rain data unavailable right now.' :
       'Heavy rain (' + info.rainMm + ' mm+ in 48 h) counts as a watering.' +
       (info.rain ? ' Last: ' + info.rain.when + '.' :
@@ -247,22 +290,37 @@ function draw() {
       return d;
     }
     btn.textContent = needy.length + (needy.length === 1 ? ' tree needs' : ' trees need') + ' water ▾';
-    var ul = L.DomUtil.create('ul', '', d);
-    ul.style.display = 'none';
-    needy.forEach(function(p){
-      var li = L.DomUtil.create('li', '', ul);
-      li.innerHTML = '<span class="dot" style="background:'+colours[p.status]+'"></span>' +
-        '<span>' + esc(p.species) + ', ' + esc(p.location) + '</span>' +
-        '<small>' + (p.days === null ? 'never' : p.days + ' d') + '</small>';
-      li.onclick = function(){ ul.style.display = 'none'; showTree(p.id); };
+    btn.setAttribute('aria-expanded', 'false');
+    var drop = L.DomUtil.create('div', 'drop', d);
+    drop.hidden = true;
+    drop.innerHTML = '<p class="head"><b>Most urgent first.</b> Ranked by time without water against how often ' +
+      'each tree needs it, so young trees rise fastest.</p>';
+    var ol = L.DomUtil.create('ol', '', drop);
+    function toggle(open) {
+      drop.hidden = !open;
+      d.classList.toggle('open', open);
+      btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+      btn.textContent = btn.textContent.replace(/[▾▴]$/, open ? '▴' : '▾');
+    }
+    needy.forEach(function(p, i){
+      var li = L.DomUtil.create('li', '', ol);
+      var every = everyDays(p);
+      var sub = [p.age ? p.age.replace(' after planting', '') : '', every ? 'every ' + every + ' d' : '',
+        p.amey ? 'Amey tree' : ''].filter(Boolean).join(' · ');
+      li.innerHTML = '<span class="n">' + (i + 1) + '.</span>' +
+        '<span class="dot" style="background:' + colourFor(p.status, p.urgency) + '"></span>' +
+        '<span class="t">' + esc(p.species) + ', ' + esc(p.location) +
+        (sub ? '<span class="sub">' + esc(sub) + '</span>' : '') + '</span>' +
+        '<small>' + dueText(p, every) + '</small>';
+      li.onclick = function(){ toggle(false); showTree(p.id); };
     });
-    btn.onclick = function(){ ul.style.display = ul.style.display === 'none' ? '' : 'none'; };
+    btn.onclick = function(){ toggle(drop.hidden); };
     return d;
   };
   drawn.push(due.addTo(map));
 
   if (showPreview) {
-    var pv = L.control({position:'topright'});
+    var pv = L.control({position:'topleft'});
     pv.onAdd = function() {
       var el = L.DomUtil.create('div', 'panel preview');
       L.DomEvent.disableClickPropagation(el);
@@ -282,11 +340,15 @@ function draw() {
           b.onclick = function(){ set(o[0]); syncUrl(); draw(); };
         });
       }
-      group('Season', [['actual', 'Today'], ['in', 'In season', data.info.inSeason === false && !hasViews],
-        ['out', 'Out of season']], preview.season, function(v){ preview.season = v; });
+      group('Season', [['actual', 'Today'], ['in', 'In', data.info.inSeason === false && !hasViews],
+        ['out', 'Out']], preview.season, function(v){ preview.season = v; });
       var droughtOn = preview.drought === 'actual' ? realDrought : preview.drought === 'on';
       group('Drought', [['off', 'Off'], ['on', 'On', !hasDrought && !realDrought]], droughtOn ? 'on' : 'off',
         function(v){ preview.drought = (v === 'on') === realDrought ? 'actual' : v; });
+      // The live data comes from the deployed Apps Script; an older version
+      // doesn't send the drought view, so say why the button is greyed out
+      if (!hasDrought) L.DomUtil.create('div', 'pv-note', el).textContent =
+        'Drought preview needs the updated script: in Apps Script, Deploy > Manage deployments > Edit > New version.';
       return el;
     };
     drawn.push(pv.addTo(map));

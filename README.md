@@ -10,7 +10,8 @@ The backend google sheet used to produce the map can be found here: https://docs
 ## The sheet
 
 - **Trees**: one row per tree. `Tree ID` is what the NFC tag links to, so never renumber or reuse one. `Planted` can be a planting season (`Winter 25/26`, counted as planted on 1 March 2026), a date or a year. `Responsibility` is `Amey` or `Community - until <month> <year>`.
-- **Log**: one row per tag tap. `Litres` is filled in only if the volunteer picks an amount on the tap page; blank counts as the default amount.
+- **Log**: one row per tag tap. `Litres` is filled in only if the volunteer picks an amount on the tap page; blank counts as the default amount. `Undone` is filled in if the volunteer chose "Tapped by mistake? Remove this watering" (allowed for an hour); those rows are kept but don't count.
+- **Summary**: columns A–F list every tree with its status worked out exactly as the map does. The script writes them: use the sheet's **Tree map > Refresh summary** menu, or **Tree map > Refresh summary every hour** once to keep it up to date automatically (it asks for permission the first time).
 - **Summary** settings (column H, blank means the default):
   - H1: base watering interval in days (7)
   - H2: rain in 48 h that counts as a watering, in mm (25)
@@ -31,9 +32,15 @@ How often a tree needs the community to water it depends on its age, who looks a
 
 Amey waters its trees weekly, so in a drought they need a community top-up on the normal schedule. Drought mode also switches watering on outside the season. During the season, trees with no watering yet count from the 1st of the month the season started.
 
-The map's "trees need water" list is sorted by urgency: days since watering ÷ the tree's interval. A tree in its first year therefore comes ahead of an older tree that has been dry for the same time.
+The map's "trees need water" list is sorted by urgency: days since watering ÷ the tree's interval. A tree in its first year therefore comes ahead of an older tree that has been dry for the same time. It can also be sorted by distance ("Nearest"), using the phone's location.
+
+## Publishing changes
+
+Every change is checked for JavaScript syntax errors (`.github/check-syntax.js`, run by `.github/workflows/pages.yml`) and the map is only published if the check passes. This needs **Settings > Pages > Build and deployment > Source** set to **GitHub Actions**. A failed check shows as a red cross next to the commit, and the previous version of the map stays live.
 
 After changing `Map-script`, paste it into the Apps Script editor and publish a new version of the existing deployment (Deploy > Manage deployments > Edit > New version), so the web app URL on the tags stays the same.
+
+## The map
 
 ### Demo controls (season and drought preview)
 

@@ -5,7 +5,7 @@ The backend google sheet used to produce the map can be found here: https://docs
 ## How it fits together
 
 - `Map-script` is the Google Apps Script bound to the sheet. NFC tags open its web app URL with `?id=<tree id>` to log a watering. `?view=data` returns the map data as JSON.
-- `index.html` is the public map, served by GitHub Pages at https://nesst-trees.github.io/NESST-tree-watering/. It loads its data from the Apps Script `?view=data` endpoint. If the address changes, update `MAP_PAGE_URL` in `Map-script` too (the tap page links to the map and loads Leaflet from it).
+- `index.html` is the public map, served by GitHub Pages at https://nesst-trees.github.io/ (from the nesst-trees/nesst-trees.github.io repository). It loads its data from the Apps Script `?view=data` endpoint. If the address changes, update `MAP_PAGE_URL` in `Map-script` too (the tap page links to the map and loads Leaflet from it).
 
 ## The sheet
 

@@ -33,7 +33,8 @@
   .legend .ramp .ends{display:flex;justify-content:space-between;font-size:11px;color:#56645b}
   /* The list of trees needing water sits above the other panels when open */
   .leaflet-top.leaflet-right{z-index:1001}
-  .due{max-width:240px}
+  /* Narrow enough on phones to leave room for the demo panel beside the zoom buttons */
+  .due{max-width:min(240px, calc(100vw - 180px))}
   .due.open{width:min(340px, calc(100vw - 70px));max-width:none}
   .due button{all:unset;cursor:pointer;display:block;padding:7px 11px;font-weight:600}
   .due .drop{max-height:calc(100vh - 75px);max-height:calc(100dvh - 75px);overflow:auto;
@@ -58,13 +59,16 @@
   .due li .sub{display:block;color:#56645b;font-size:12px}
   .due li small{color:#1f2d24;font-weight:600;margin-left:auto;white-space:nowrap;padding-left:6px}
   .locate{all:unset;cursor:pointer;width:30px;height:30px;display:flex;align-items:center;
-    justify-content:center;background:#fff;font-size:17px}
+    justify-content:center;background:#fff;font-size:17px;color:#1f2d24}
   .toast button{font:inherit;margin-left:6px}
   .toast{position:absolute;left:50%;top:12px;transform:translateX(-50%);z-index:1000;
     background:#1f2d24;color:#fff;padding:8px 12px;border-radius:8px;font-size:13px;
     max-width:80vw;text-align:center}
   /* Each switch is a label over two equal buttons, In/On left and Out/Off right */
-  .preview{padding:6px 8px;display:flex;flex-direction:column;gap:6px}
+  /* Sits right of the zoom buttons; its top and bottom are set to match the
+     zoom and location buttons in placeDemoPanel */
+  .preview{padding:5px 8px;display:flex;flex-direction:column;justify-content:space-between;gap:4px;
+    box-sizing:border-box}
   .preview .pv-note{font-size:11.5px;color:#8a4b00;width:150px}
   .preview .pv-label{display:block;font-size:12px;color:#56645b;margin-bottom:3px}
   .preview .pv-btns{display:grid;grid-template-columns:1fr 1fr;gap:4px}
@@ -293,6 +297,7 @@ function draw() {
   drawn.push({remove: function(){
     map.off('zoomstart', hideBadges); map.off('moveend', updateBadges); badgeLayer.remove();
   }});
+  homeBounds = bounds;
   if (first) {
     if (bounds.length) map.fitBounds(bounds, {padding:[40,40], maxZoom:17});
     else map.setView([53.48, -1.49], 15);
@@ -460,9 +465,47 @@ function draw() {
       return el;
     };
     drawn.push(pv.addTo(map));
+    placeDemoPanel(map, pv.getContainer());
   }
 
 }
+
+// Moves the demo panel out of the stack of left-hand buttons to sit beside
+// them: top level with the zoom buttons, bottom level with the location button
+function placeDemoPanel(map, el) {
+  var mapEl = map.getContainer();
+  var zoom = mapEl.querySelector('.leaflet-control-zoom');
+  var locate = mapEl.querySelector('.locate');
+  if (!zoom || !locate) return;
+  mapEl.appendChild(el);
+  var m = mapEl.getBoundingClientRect(), z = zoom.getBoundingClientRect();
+  var l = locate.parentNode.getBoundingClientRect();
+  el.style.position = 'absolute';
+  el.style.zIndex = 1000;
+  el.style.margin = '0';
+  el.style.top = (z.top - m.top) + 'px';
+  el.style.left = (z.right - m.left + 10) + 'px';
+  el.style.minHeight = (l.bottom - z.top) + 'px';
+}
+
+// Back to the opening view: every tree in sight
+var homeBounds = null;
+function showAll() {
+  if (!currentMap) return;
+  currentMap.closePopup();
+  if (homeBounds && homeBounds.length) currentMap.fitBounds(homeBounds, {padding:[40,40], maxZoom:17});
+}
+
+// A fresh load always opens on the full view. Phones can also bring back a
+// page exactly as it was left, so do the same then, and after 30+ minutes
+// away refresh the data too. Quick app switches keep the current view.
+var AWAY_RESET_MS = 30 * 60 * 1000, hiddenAt = 0;
+window.addEventListener('pageshow', function(e){ if (e.persisted) { showAll(); load(); } });
+document.addEventListener('visibilitychange', function(){
+  if (document.hidden) { hiddenAt = Date.now(); return; }
+  if (hiddenAt && Date.now() - hiddenAt > AWAY_RESET_MS) { showAll(); load(); }
+  hiddenAt = 0;
+});
 
 function toast(msg) {
   var t = document.createElement('div');
@@ -499,6 +542,21 @@ function setupMap(tileUrl) {
     return d;
   };
   locate.addTo(map);
+
+  // Back to the opening view with every tree in sight
+  var home = L.control({position:'topleft'});
+  home.onAdd = function() {
+    var d = L.DomUtil.create('div', 'leaflet-bar');
+    var b = L.DomUtil.create('button', 'locate', d);
+    b.title = 'Show all trees'; b.setAttribute('aria-label', 'Show all trees');
+    b.innerHTML = '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" ' +
+      'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.5 5.5v-4h4M10.5 1.5h4v4M14.5 10.5v4h-4M5.5 14.5h-4v-4"/></svg>';
+    L.DomEvent.disableClickPropagation(d);
+    b.onclick = showAll;
+    return d;
+  };
+  home.addTo(map);
+
   map.on('locationfound', function(e){
     if (me) map.removeLayer(me);
     me = L.layerGroup([

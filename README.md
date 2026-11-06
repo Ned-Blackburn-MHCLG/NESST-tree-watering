@@ -41,4 +41,6 @@ For now the map always shows a small demo panel with two switches: Season (In / 
 
 To hide the panel again, set `DEMO_CONTROLS = false` in `index.html`. After that, only links containing `?preview` or `?drought` show it.
 
+The map always opens showing every tree. The button under the location button ("Show all trees") returns to that view, and the map does so itself when a phone restores the page from memory or after 30+ minutes away (when it also refreshes the data). Links with `?tree=<id>`, like the one on the tap page, open on that tree.
+
 On the map, community trees are circles and Amey trees are smaller circles. Newly planted (1st year) trees that are 2 or more days overdue get a "!" badge.

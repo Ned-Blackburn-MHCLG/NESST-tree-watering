@@ -1,4 +1,4 @@
-<!DOCTYPE html><html><head><meta charset="utf-8">
+  <!DOCTYPE html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>NESST Tree Watering Map</title>
 <meta name="description" content="Which of the NESST street trees need watering, updated from volunteer tag taps and local rainfall.">
@@ -317,8 +317,8 @@ function draw() {
       '<span class="row"><span class="dot hollow small"></span>Amey tree</span></div>';
     if (info.drought) h += '<div class="note"><b>Drought mode is on.</b> Young trees need water more often, ' +
       'and young Amey trees need a top-up too.</div>';
-    else if (!offSeason) h += '<div class="note">Overdue is measured against how often each tree needs ' +
-      'water, so young trees turn red sooner.</div>';
+    else if (!offSeason) h += '<div class="note">Overdueness is measured against how often each tree needs ' +
+      'water; younger trees turn red sooner.</div>';
     h += '<div class="note">' + (info.rainError ? 'Rain data unavailable right now.' :
       'Heavy rain (' + info.rainMm + ' mm+ in 48 h) counts as a watering.' +
       (info.rain ? ' Last: ' + info.rain.when + '.' :
@@ -353,8 +353,7 @@ function draw() {
     btn.setAttribute('aria-expanded', 'false');
     var drop = L.DomUtil.create('div', 'drop', d);
     drop.hidden = true;
-    drop.innerHTML = '<p class="head"><b>Most urgent first.</b> Ranked by time without water against how often ' +
-      'each tree needs it, so young trees rise fastest.' + (badges.length ? ' <span class="flag sm">!</span>marks ' +
+    drop.innerHTML = '<p class="head"><b>Most urgent at the top based on each tree''s age and watering history</b>' + (badges.length ? ' <span class="flag sm">!</span>marks ' +
       'newly planted trees ' + FLAG_GRACE_DAYS + '+ days overdue.' : '') + '</p>';
     var ol = L.DomUtil.create('ol', '', drop);
     function toggle(open) {

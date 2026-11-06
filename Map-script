@@ -283,7 +283,7 @@ function computeStatuses(trees, taps, rain, settings, now) {
         // Share of the interval used up: 1 = due now. Younger trees have shorter
         // intervals, so they climb faster. Never-watered trees rank by age.
         urgency: Math.round((days === null ? settings.overdue : days) / interval.days * 100) / 100,
-        interval: interval.label
+        every: interval.days, interval: interval.label
       };
     }
     const views = {
@@ -297,7 +297,8 @@ function computeStatuses(trees, taps, rain, settings, now) {
     return {
       id: t.id, species: t.species, location: t.location,
       lat: t.lat, lng: t.lng, days: days,
-      status: view.status, rest: view.rest, due: view.due, urgency: view.urgency, views: views,
+      status: view.status, rest: view.rest, due: view.due, urgency: view.urgency, every: view.every || null,
+      views: views,
       interval: view.interval || actual.label, age: actual.age, planted: t.plantedText,
       amey: t.amey, responsibility: t.responsibility,
       lastTap: lastTap ? fmt(lastTap) : null,
@@ -510,8 +511,11 @@ function tileUrl() {
 const ATTRIBUTION = '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap</a> ' +
   '&copy; <a href="https://carto.com/attributions" target="_blank">CARTO</a>';
 
-const COLOURS = {overdue:'#c0392b', never:'#5d6d7e', soon:'#e67e22', ok:'#27ae60', rest:'#7f9cc0',
-  amey:'#b4bec6'};
+// Same colours as the map page (index.html): RAMP shades due and overdue
+// trees by urgency, amber to deep red
+const RAMP = ['#e49a22', '#e48127', '#e2672a', '#d14d2e', '#bf2f2f', '#951f28', '#6d1020'];
+const COLOURS = {overdue: RAMP[4], never:'#5d6d7e', soon: RAMP[0], ok:'#1b9e77', rest:'#7096d4',
+  amey:'#c2c8cd'};
 
 // Optional amount buttons. The watering is already logged; a button only
 // fills in the Litres column of that row.
@@ -579,7 +583,7 @@ document.getElementById('show').onclick = function() {
     var d = res[0];
     btn.remove();
     var el = document.getElementById('mini'); el.hidden = false;
-    var colours = ${JSON.stringify(COLOURS)};
+    var colours = ${JSON.stringify(COLOURS)}, ramp = ${JSON.stringify(RAMP)};
     var here = ${JSON.stringify(o.tree.id)};
     var map = L.map(el, {zoomControl:false, dragging:false, touchZoom:false, scrollWheelZoom:false,
       doubleClickZoom:false, boxZoom:false, keyboard:false});
@@ -589,12 +593,11 @@ document.getElementById('show').onclick = function() {
     d.points.forEach(function(p){
       var me = p.id === here;
       var key = me ? 'ok' : p.status === 'rest' && p.rest === 'amey' ? 'amey' : p.status;
-      // Circles for community trees, squares for Amey trees
-      var size = me ? 26 : p.amey ? 12 : 16;
-      L.marker([p.lat, p.lng], {interactive:false, keyboard:false, zIndexOffset: me ? 1000 : 0,
-        icon: L.divIcon({className:'', iconSize:[size, size], html:'<div style="width:100%;height:100%;' +
-          'box-sizing:border-box;background:' + colours[key] + ';border:' + (me ? 3 : 2) + 'px solid #fff;' +
-          'border-radius:' + (p.amey ? '3px' : '50%') + ';box-shadow:0 0 0 1px rgba(0,0,0,.15)"></div>'})}).addTo(map);
+      var fill = !me && (key === 'soon' || key === 'overdue') && p.urgency ?
+        ramp[Math.round(Math.min(1, Math.max(0, (p.urgency - 0.75) / 1.75)) * (ramp.length - 1))] : colours[key];
+      // Amey trees are smaller circles
+      L.circleMarker([p.lat, p.lng], {radius: me ? 13 : p.amey ? 5 : 8, color:'#fff', weight: me ? 3 : 2,
+        fillColor: fill, fillOpacity:1, interactive:false}).addTo(map);
       if (me) map.setView([p.lat, p.lng], 18);
     });
   }).catch(function() {

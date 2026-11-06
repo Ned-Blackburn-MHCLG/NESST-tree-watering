@@ -353,7 +353,7 @@ function draw() {
     btn.setAttribute('aria-expanded', 'false');
     var drop = L.DomUtil.create('div', 'drop', d);
     drop.hidden = true;
-    drop.innerHTML = '<p class="head"><b>Most urgent at the top based on each tree''s age and watering history</b>' + (badges.length ? ' <span class="flag sm">!</span>marks ' +
+    drop.innerHTML = '<p class="head"><b>Most urgent at the top based on each tree\'s age and watering history</b>' + (badges.length ? ' <span class="flag sm">!</span>marks ' +
       'newly planted trees ' + FLAG_GRACE_DAYS + '+ days overdue.' : '') + '</p>';
     var ol = L.DomUtil.create('ol', '', drop);
     function toggle(open) {

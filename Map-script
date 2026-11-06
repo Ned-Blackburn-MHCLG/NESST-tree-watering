@@ -182,13 +182,14 @@ function getTrees(ss) {
 }
 
 // Returns {treeId: [{ms, litres}, ...]} sorted oldest first; litres is null
-// when the volunteer didn't choose an amount
+// when the volunteer didn't choose an amount. Taps undone on the tap page
+// (Log column D, "Undone") are left out.
 function getTapsById(ss) {
   const log = ss.getSheetByName('Log').getDataRange().getValues();
   const byId = {};
   for (let i = 1; i < log.length; i++) {
     const id = normId(log[i][1]);
-    if (!id) continue;
+    if (!id || log[i][3]) continue;
     const t = log[i][0];
     const ms = (t instanceof Date) ? t.getTime() : parseUKDate(t);
     if (!ms) continue;
@@ -320,6 +321,61 @@ function mapContext(ss) {
   return {settings: settings, trees: trees, taps: taps, rain: rain};
 }
 
+// Adds a "Tree map" menu to the sheet
+function onOpen() {
+  SpreadsheetApp.getUi().createMenu('Tree map')
+    .addItem('Refresh summary', 'updateSummary')
+    .addItem('Refresh summary every hour', 'installSummaryTrigger')
+    .addToUi();
+}
+
+// Writes each tree's status, worked out exactly as the map does, to the
+// Summary tab (columns A-F from row 3; the settings in G and H are left alone)
+function updateSummary() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName('Summary');
+  if (!sheet) return;
+  const ctx = mapContext(ss), now = Date.now();
+  const rawIds = {};
+  ctx.trees.forEach(function(t) { rawIds[t.id] = t.rawId; });
+  const rows = computeStatuses(ctx.trees, ctx.taps, ctx.rain, ctx.settings, now).map(function(p) {
+    const list = ctx.taps[p.id] || [];
+    const last = list.length ? list[list.length - 1].ms : 0;
+    return [rawIds[p.id], p.species + ', ' + p.location, last ? new Date(last) : '',
+      last ? Math.floor((now - last) / 86400000) : '', summaryStatus(p), p.due || ''];
+  });
+  sheet.getRange(3, 1, sheet.getMaxRows() - 2, 6).clearContent();
+  sheet.getRange('A1').setValue('Statuses as shown on the map, updated ' + fmt(now) +
+    '. Refresh from the Tree map menu.');
+  sheet.getRange(3, 1, 1, 6).setValues([['Tree ID', 'Tree', 'Last watered', 'Days since', 'Status', 'Next due']]);
+  if (rows.length) {
+    sheet.getRange(4, 1, rows.length, 6).setValues(rows);
+    sheet.getRange(4, 3, rows.length, 1).setNumberFormat('dd/mm/yyyy hh:mm');
+  }
+}
+
+function summaryStatus(p) {
+  if (p.status === 'rest') {
+    return p.rest === 'season' ? 'Out of season' : p.rest === 'amey' ? 'Amey waters weekly' : 'Established';
+  }
+  if (p.status === 'never') return '⚫ Never watered';
+  if (p.status === 'soon') return '🟠 Due soon';
+  if (p.status === 'ok') return '🟢 OK';
+  const over = p.every && p.days !== null ? p.days - p.every : null;
+  // Same rule as the map's "!" badge: 1st-year trees 2+ days overdue
+  const flag = over !== null && over >= 2 && /^1st year/.test(p.age || '') ? ' (newly planted!)' : '';
+  return '🔴 Overdue' + (over > 0 ? ' by ' + over + ' d' : '') + flag;
+}
+
+// Run once from the Tree map menu: refreshes the Summary tab every hour
+function installSummaryTrigger() {
+  ScriptApp.getProjectTriggers().forEach(function(t) {
+    if (t.getHandlerFunction() === 'updateSummary') ScriptApp.deleteTrigger(t);
+  });
+  ScriptApp.newTrigger('updateSummary').timeBased().everyHours(1).create();
+  updateSummary();
+}
+
 // Public map page (index.html on GitHub Pages); Script Property "mapUrl" overrides it
 function mapPageUrl(treeId) {
   const base = PropertiesService.getScriptProperties().getProperty('mapUrl') || MAP_PAGE_URL;
@@ -403,6 +459,10 @@ function recordWatering(e) {
   } else if (settings.drought) {
     lines.push('Drought mode is on: ' + interval.label.replace(/^Drought: /, '') + '.');
   }
+  // When to come back, counted from this watering
+  if (activeSeason(settings, now) && interval.days) {
+    lines.push('<b>Next needed around ' + fmt(thisTapMs + interval.days * 86400000, 'EEE d MMM') + '.</b>');
+  }
 
   // The optional mini map fetches ?view=data itself, so the page doesn't carry
   // every tree's status
@@ -412,6 +472,7 @@ function recordWatering(e) {
     tree: tree, lines: lines,
     litres: token ? {token: token, current: thisTap ? thisTap.litres : null,
       defaultLitres: settings.defaultLitres} : null,
+    undoToken: token,
     dataUrl: ScriptApp.getService().getUrl() + '?view=data'
   })).addMetaTag('viewport', 'width=device-width, initial-scale=1');
 }
@@ -437,24 +498,43 @@ function litresToken(row, id, ms) {
   return row + '.' + ms + '.' + sig;
 }
 
-// Called from the tap page's litres buttons via google.script.run
-function setLitres(token, litres) {
-  litres = +litres;
-  if (LITRE_OPTIONS.indexOf(litres) < 0) throw new Error('unexpected amount');
+// The Log row a tap-page token refers to, checked: {log, row, id}. Throws if
+// the token is too old, forged, or the row has since moved or been undone.
+function tokenRow(token) {
   const parts = String(token).split('.');
   const row = +parts[0], ms = +parts[1];
   if (!(row > 1) || !ms || Date.now() - ms > LITRES_EDIT_MS) {
     throw new Error('this watering can no longer be changed');
   }
   const log = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Log');
-  const cells = row <= log.getLastRow() ? log.getRange(row, 1, 1, 2).getValues()[0] : [];
+  const cells = row <= log.getLastRow() ? log.getRange(row, 1, 1, 4).getValues()[0] : [];
   const t = cells[0] instanceof Date ? cells[0].getTime() : parseUKDate(cells[0]);
   // The row must still be the one that was logged (rows can be moved or deleted)
   if (!t || Math.abs(t - ms) > 2000 || litresToken(row, normId(cells[1]), ms) !== String(token)) {
     throw new Error('couldn\u2019t find this watering in the log');
   }
-  log.getRange(row, 3).setValue(litres);
+  if (cells[3]) throw new Error('this watering was removed');
+  return {log: log, row: row, id: normId(cells[1])};
+}
+
+// Called from the tap page's litres buttons via google.script.run
+function setLitres(token, litres) {
+  litres = +litres;
+  if (LITRE_OPTIONS.indexOf(litres) < 0) throw new Error('unexpected amount');
+  const r = tokenRow(token);
+  r.log.getRange(r.row, 3).setValue(litres);
   return litres;
+}
+
+// Called from the tap page's "Tapped by mistake?" button. The row is kept but
+// marked in Log column D, so it no longer counts and the record stays.
+function undoWatering(token) {
+  const r = tokenRow(token);
+  if (!r.log.getRange(1, 4).getValue()) r.log.getRange(1, 4).setValue('Undone');
+  r.log.getRange(r.row, 4).setValue(new Date());
+  // A real tap straight afterwards should count, not be treated as a repeat
+  CacheService.getScriptCache().remove('tap:' + r.id);
+  return true;
 }
 
 function mapData(e) {
@@ -629,12 +709,36 @@ document.getElementById('show').onclick = function() {
   .opts button.on{background:#1f6f3a;border-color:#1f6f3a;color:#fff}
   .opts button:disabled{opacity:.6}
   #lmsg{margin:10px 0 0;font-size:14px}
+  .undo{margin:14px 0 0;font-size:14px;color:#56645b}
+  .undo button{all:unset;cursor:pointer;text-decoration:underline;color:#56645b;margin:0;padding:4px}
 </style></head><body><div class="wrap">
   <div class="tick">${o.ok ? '\u{1F4A7}' : '\u2753'}</div>
   <h1>${o.heading}</h1>
   ${o.tree ? `<p class="tree">${o.tree.species}</p><p class="where">${o.tree.location}</p>` : ''}
-  ${o.lines.map(function(l) { return '<p>' + l + '</p>'; }).join('')}
+  ${o.lines.map(function(l) { return '<p class="ln">' + l + '</p>'; }).join('')}
   ${litresHtml(o.litres)}
+  ${undoHtml(o.undoToken)}
   ${extra}
 </div></body></html>`;
+}
+
+// "Tapped by mistake?" link: marks this tap as undone so it doesn't count
+function undoHtml(token) {
+  if (!token) return '';
+  return `
+<p class="undo"><button type="button" id="undo">Tapped by mistake? Remove this watering</button></p>
+<script>
+document.getElementById('undo').onclick = function() {
+  var b = this;
+  b.disabled = true; b.textContent = 'Removing\u2026';
+  google.script.run.withSuccessHandler(function() {
+    document.querySelector('h1').textContent = 'Watering removed';
+    [].slice.call(document.querySelectorAll('.ln, .litres')).forEach(function(el) { el.remove(); });
+    b.parentNode.textContent = 'This tap won\u2019t count. If you did water the tree, tap the tag again.';
+  }).withFailureHandler(function(err) {
+    b.disabled = false;
+    b.textContent = 'Couldn\u2019t remove it' + (err && err.message ? ' (' + err.message + ')' : '') + '. Try again';
+  }).undoWatering(${JSON.stringify(token)});
+};
+<\/script>`;
 }

@@ -43,6 +43,10 @@
     border-bottom:1px solid #e3e9e4}
   .due .head b{color:#1f2d24;display:block}
   .due .head .line{display:block;margin-top:3px}
+  .due .head .sort{margin-top:6px}
+  .due .head .sort button{display:inline-block;padding:2px 9px;margin-left:4px;border:1px solid #c9d8cb;
+    border-radius:999px;background:#fff;color:#1f2d24;font-weight:400;font-size:12px}
+  .due .head .sort button.on{background:#1f6f3a;border-color:#1f6f3a;color:#fff}
   .due ol{list-style:none;margin:0;padding:0 0 4px}
   .due li{display:flex;gap:7px;align-items:center;padding:7px 11px;cursor:pointer;border-bottom:1px solid #f0f3f0}
   .due li:hover{background:#f1f5f1}
@@ -80,6 +84,10 @@
   .preview button:disabled{opacity:.45;cursor:default}
   .pop b{font-size:14px}
   .pop .muted{color:#56645b}
+  .pop .now{margin:8px 0 6px;padding:6px 8px;border-left:4px solid;background:#f6f8f6;border-radius:3px;
+    font-weight:600;font-size:13.5px}
+  .pop .det{color:#56645b;font-size:12.5px;line-height:1.45}
+  .pop .dir{display:inline-block;margin-top:8px;font-weight:600;color:#1f6f3a}
 </style></head><body>
 <div id="map"></div>
 <div id="status" class="toast" hidden></div>
@@ -89,6 +97,10 @@ var DATA_URL = 'https://script.google.com/macros/s/AKfycbzwHppa_Dd1riWXpchENKyJN
 
 var data, currentMap, drawn = [];
 var legendOpen = false; // legend notes expanded (kept across redraws)
+var listSort = 'urgent'; // 'urgent' or 'near' (kept across redraws)
+var myLatLng = null;     // set once the phone shares its location
+
+function distText(m) { return m < 1000 ? Math.round(m / 10) * 10 + ' m' : (m / 1000).toFixed(1) + ' km'; }
 
 // Colours were checked for colour-blind separation and against the light
 // map. Trees that are due or overdue take a step on RAMP (amber to deep red,
@@ -125,6 +137,24 @@ function flagged(p) {
   if (p.status !== 'overdue' || p.days === null || !/^1st year/.test(p.age || '')) return false;
   var every = everyDays(p);
   return !!every && p.days - every >= FLAG_GRACE_DAYS;
+}
+
+// One-line answer at the top of a tree's popup
+function headline(p, info) {
+  if (p.rest === 'season') return 'No watering needed: out of season';
+  if (p.rest === 'amey') return 'Amey waters this tree weekly';
+  if (p.rest === 'established') return 'Established: only needs water in a drought';
+  if (p.status === 'never') return 'Needs water: none recorded yet';
+  var every = everyDays(p);
+  var over = every && p.days !== null ? p.days - every : null;
+  if (p.status === 'overdue') {
+    return 'Needs water now' + (over > 0 ? ': ' + over + (over === 1 ? ' day' : ' days') + ' overdue' : '');
+  }
+  if (p.status === 'soon') {
+    return 'Due ' + (over === -1 ? 'tomorrow' : over !== null ? 'in ' + (-over) + ' days' : 'soon') +
+      (p.due ? ' (' + p.due + ')' : '');
+  }
+  return p.due ? 'Fine until ' + p.due : 'Watered recently';
 }
 
 // Right-hand text in the list of trees needing water
@@ -209,22 +239,26 @@ function draw() {
   drawn.forEach(function(x){ x.remove(); });
   drawn = [];
 
+  // Popup: the tree, then a one-line answer to "does it need water?", then
+  // the details, then walking directions
   function popupHtml(p) {
     var h = '<div class="pop"><b>' + esc(p.species) + '</b><br><span class="muted">' + esc(p.location) + '</span>';
-    if (p.planted) h += '<br><span class="muted">Planted ' + esc(p.planted) + (p.age ? ' · ' + esc(p.age) : '') + '</span>';
-    if (p.responsibility) h += '<br><span class="muted">Looked after by: ' + esc(p.responsibility) + '</span>';
-    h += '<br><br>';
+    h += '<div class="now" style="border-left-color:' + colourFor(key(p), p.urgency) + '">' +
+      (flagged(p) ? '<span class="flag sm">!</span>' : '') + esc(headline(p, info)) + '</div><div class="det">';
     if (p.lastTap) h += 'Last watered: ' + p.lastTap + '<br>';
     else h += 'No watering recorded yet<br>';
     if (p.rainReset && info.rain) h += 'Heavy rain (' + info.rain.mm + ' mm, ' + info.rain.when + ') counted as a watering<br>';
     else if (p.fromSeasonStart && p.due) h += 'Counted from the start of the season<br>';
-    if (p.rest === 'season') h += 'Out of season (' + info.season + ') — water only in a long dry spell<br>';
+    if (p.rest === 'season') h += 'Out of season (' + info.season + '): water only in a long dry spell<br>';
     else if (p.interval) h += esc(p.interval) + '<br>';
-    if (p.due) h += (p.status === 'overdue' ? '<b style="color:' + colours.overdue + '">Overdue</b> since ' : 'Next due: ') + p.due + '<br>';
     if (p.litres7) h += 'About ' + p.litres7 + ' L logged in the last 7 days' +
-      (p.litresAssumed ? ' <span class="muted">(' + p.litresAssumed + ' without an amount, counted as ' +
-        (info.defaultLitres || 5) + ' L)</span>' : '') + '<br>';
-    h += '<span class="muted">Waterings: ' + p.count30 + ' in last 30 days · ' + p.countYear + ' this year</span></div>';
+      (p.litresAssumed ? ' (' + p.litresAssumed + ' without an amount, counted as ' +
+        (info.defaultLitres || 5) + ' L)' : '') + '<br>';
+    h += 'Waterings: ' + p.count30 + ' in last 30 days · ' + p.countYear + ' this year<br>';
+    if (p.planted) h += 'Planted ' + esc(p.planted) + (p.age ? ' · ' + esc(p.age) : '') + '<br>';
+    if (p.responsibility) h += 'Looked after by: ' + esc(p.responsibility);
+    h += '</div><a class="dir" target="_blank" rel="noopener" href="https://www.google.com/maps/dir/?api=1&destination=' +
+      p.lat + ',' + p.lng + '&travelmode=walking">Directions ›</a></div>';
     return h;
   }
 
@@ -384,10 +418,7 @@ function draw() {
     btn.setAttribute('aria-expanded', 'false');
     var drop = L.DomUtil.create('div', 'drop', d);
     drop.hidden = true;
-    drop.innerHTML = '<p class="head"><b>Most urgent at the top based on each tree’s age and watering history</b>' +
-      (badges.length ? '<span class="line"><span class="flag sm">!</span>marks newly planted trees ' +
-        FLAG_GRACE_DAYS + '+ days overdue.</span>' : '') +
-      '<span class="line">Tap an entry to see the tree on the map.</span></p>';
+    var head = L.DomUtil.create('p', 'head', drop);
     var ol = L.DomUtil.create('ol', '', drop);
     // The open list runs down the screen but stops above the legend where the
     // two would overlap (on phones, where the legend spans the full width)
@@ -408,19 +439,48 @@ function draw() {
       btn.querySelector('.arrow').textContent = open ? '▴' : '▾';
       fitDrop();
     }
-    needy.forEach(function(p, i){
-      var li = L.DomUtil.create('li', '', ol);
-      var every = everyDays(p);
-      var sub = [p.age ? p.age.replace(' after planting', '') : '', every ? 'every ' + every + ' d' : '',
-        p.amey ? 'Amey tree' : ''].filter(Boolean).join(' · ');
-      li.innerHTML = '<span class="n">' + (i + 1) + '.</span>' +
-        '<span class="dot" style="background:' + colourFor(p.status, p.urgency) + '"></span>' +
-        '<span class="t">' + esc(p.species) + ', ' + esc(p.location) +
-        (sub ? '<span class="sub">' + esc(sub) + '</span>' : '') + '</span>' +
-        '<small>' + (flagged(p) ? '<span class="flag sm" title="Newly planted and overdue">!</span>' : '') +
-        dueText(p, every) + '</small>';
-      li.onclick = function(){ toggle(false); showTree(p.id); };
-    });
+    // Most urgent first, or nearest first once the phone's location is known
+    function render() {
+      var near = listSort === 'near' && myLatLng;
+      head.innerHTML = '<b>' + (near ? 'Nearest to you first' :
+        'Most urgent at the top based on each tree’s age and watering history') + '</b>' +
+        (badges.length ? '<span class="line"><span class="flag sm">!</span>marks newly planted trees ' +
+          FLAG_GRACE_DAYS + '+ days overdue.</span>' : '') +
+        '<span class="line">Tap an entry to see the tree on the map.</span>' +
+        '<span class="line sort">Sort: <button type="button" data-s="urgent" class="' + (near ? '' : 'on') +
+        '">Most urgent</button><button type="button" data-s="near" class="' + (near ? 'on' : '') +
+        '">Nearest</button></span>';
+      [].forEach.call(head.querySelectorAll('.sort button'), function(b){
+        b.onclick = function(){ sortBy(b.getAttribute('data-s'), b); };
+      });
+      var rows = needy.slice();
+      if (near) rows.sort(function(a, b){ return distTo(a) - distTo(b); });
+      ol.innerHTML = '';
+      rows.forEach(function(p, i){
+        var li = L.DomUtil.create('li', '', ol);
+        var every = everyDays(p);
+        var sub = [p.age ? p.age.replace(' after planting', '') : '', every ? 'every ' + every + ' d' : '',
+          p.amey ? 'Amey tree' : '', near ? distText(distTo(p)) + ' away' : ''].filter(Boolean).join(' · ');
+        li.innerHTML = '<span class="n">' + (i + 1) + '.</span>' +
+          '<span class="dot" style="background:' + colourFor(p.status, p.urgency) + '"></span>' +
+          '<span class="t">' + esc(p.species) + ', ' + esc(p.location) +
+          (sub ? '<span class="sub">' + esc(sub) + '</span>' : '') + '</span>' +
+          '<small>' + (flagged(p) ? '<span class="flag sm" title="Newly planted and overdue">!</span>' : '') +
+          dueText(p, every) + '</small>';
+        li.onclick = function(){ toggle(false); showTree(p.id); };
+      });
+    }
+    function distTo(p) { return map.distance(myLatLng, [p.lat, p.lng]); }
+    function sortBy(s, b) {
+      if (s === 'urgent' || myLatLng) { listSort = s; render(); return; }
+      // Ask for the location first; the map shows the blue "you are here" dot
+      b.textContent = 'Finding you…';
+      map.once('locationfound', function(){ listSort = 'near'; render(); });
+      map.once('locationerror', function(){ render(); });
+      if (!navigator.geolocation) { toast('Location isn’t available on this device.'); render(); return; }
+      map.locate({setView:false});
+    }
+    render();
     btn.onclick = function(){ toggle(drop.hidden); };
     return d;
   };
@@ -558,6 +618,7 @@ function setupMap(tileUrl) {
   home.addTo(map);
 
   map.on('locationfound', function(e){
+    myLatLng = e.latlng;
     if (me) map.removeLayer(me);
     me = L.layerGroup([
       L.circle(e.latlng, {radius:e.accuracy, color:'#2e86de', weight:1, fillOpacity:.1, interactive:false}),

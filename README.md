@@ -41,4 +41,4 @@ For now the map always shows a small demo panel with two switches: Season (In / 
 
 To hide the panel again, set `DEMO_CONTROLS = false` in `index.html`. After that, only links containing `?preview` or `?drought` show it.
 
-On the map, community trees are circles and Amey trees are smaller squares.
+On the map, community trees are circles and Amey trees are smaller circles. Newly planted (1st year) trees that are 2 or more days overdue get a "!" badge.
